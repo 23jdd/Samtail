@@ -51,7 +51,7 @@ type Parser struct {
 //
 // 参数：
 //   - lineChan: 原始 LogLine 输入 channel（通常来自 TailReader）
-//   - entryChan: 解析后的 LogEntry 输出 channel（通常流向 BatchWriter）
+//   - entryChan: 解析后的 LogEntry 输出 channel（通常流向 EntryBatcher）
 //
 // entryChan 应该是带缓冲的 channel，以避免慢消费者阻塞解析器。
 func NewParser(lineChan <-chan LogLine, entryChan chan<- LogEntry) *Parser {
