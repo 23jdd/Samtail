@@ -148,7 +148,15 @@ func NewTailReader(eventChan chan LogEvent, lineChan chan LogLine) *TailReader {
 		states:    make(map[string]*FileState),
 	}
 }
-
+func (t *TailReader) ReLoad() error {
+	r, err := os.Open(MetaFile)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	err = json.NewDecoder(r).Decode(&t.states)
+	return err
+}
 func (t *TailReader) Run(ctx context.Context) {
 	go t.Checkpoit()
 	for {
@@ -390,8 +398,6 @@ func (b *BatchWriter) flush() {
 	log.Printf("[BatchWriter] 刷盘 %d 行", len(lines))
 }
 
-// ==================== 4. 主程序：组装流水线 ====================
-
 func main() {
 	targetDir := "logs"     // 监控目录
 	outputDir := "./output" // 存储目录
@@ -411,6 +417,10 @@ func main() {
 	}
 
 	reader := NewTailReader(eventChan, lineChan)
+	err = reader.ReLoad()
+	if err != nil {
+		log.Println(err)
+	}
 	writer := NewBatchWriter(lineChan, outputDir)
 
 	// 优雅关闭：捕获信号
@@ -424,26 +434,20 @@ func main() {
 	var wg sync.WaitGroup
 
 	// Stage 1: Watcher（单 goroutine，fsnotify 非线程安全）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	
+	wg.Go(func() {
 		watcher.Run(ctx)
-	}()
+	})
 
 	// Stage 2: TailReader（单 goroutine，文件 offset 需顺序维护）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		reader.Run(ctx)
-	}()
+	})
 
 	// Stage 3: BatchWriter（单 goroutine，磁盘顺序写）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		writer.Run(ctx)
-	}()
-
+	})
 	// 等待所有组件退出
 	wg.Wait()
 	log.Println("监控程序已退出")
