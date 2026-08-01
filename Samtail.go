@@ -298,9 +298,35 @@ func (t *TailReader) SafeWriteFile() error {
 //
 // 配置通过环境变量读取，支持本地备份和远程 SamKv 多后端同时写入。
 func main() {
-	// 命令行参数
 	configPath := flag.String("f", "", ".env 配置文件路径")
 	daemonFlag := flag.Bool("d", false, "后台守护进程模式")
+
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), `samtail - 日志收集器，监控本地日志并发送到 SamKv
+
+用法:
+  samtail [选项]
+
+选项:
+  -f <path>  加载 .env 格式配置文件
+  -d         后台守护进程模式（PID 写入 samtail.pid）
+  -h         显示此帮助信息
+
+环境变量:
+  SAMTAIL_DIR          监控目录（默认: logs）
+  SAMTAIL_DB_URL       SamKv 端点（默认: http://127.0.0.1:6379/logs/batch）
+  SAMTAIL_OUTPUT        本地备份目录（默认: ./output）
+  SAMTAIL_BATCH_SIZE    批次大小（默认: 1000）
+  SAMTAIL_FLUSH_SECS    刷新间隔秒数（默认: 2）
+
+示例:
+  samtail                           # 默认配置运行
+  samtail -f .env                   # 加载配置文件
+  samtail -d                        # 后台守护进程
+  samtail -d -f .env                # 守护进程 + 配置文件
+`)
+	}
+
 	flag.Parse()
 
 	// -f：加载配置文件（优先级低于已存在的环境变量）
