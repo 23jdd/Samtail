@@ -19,8 +19,12 @@ import (
 )
 
 const (
-	MetaFile     = "meta.json"
-	TemplateFile = "meta_template_*.json"
+	MetaFile      = "meta.json"
+	TemplateFile  = "meta_template_*.json"
+	DefaultDir    = "logs"
+	DefaultOutDir = "./output"
+	DefaultDBURL  = "http://127.0.0.1:9999/logs/batch"
+	DefaultListen = ":9999"
 )
 
 // LogEvent 从 fsnotify 转化来的内部事件
@@ -405,65 +409,179 @@ func (b *BatchWriter) flush() {
 }
 
 func main() {
-	targetDir := "logs"     // 监控目录
-	outputDir := "./output" // 存储目录
-     
-	// 创建带取消的上下文
+	targetDir := envOrDefault("SAMTAIL_DIR", DefaultDir)
+	outputDir := envOrDefault("SAMTAIL_OUTPUT", DefaultOutDir)
+	dbURL := envOrDefault("SAMTAIL_DB_URL", DefaultDBURL)
+	listenAddr := envOrDefault("SAMTAIL_LISTEN", DefaultListen)
+	batchSize := envIntOrDefault("SAMTAIL_BATCH_SIZE", 1000)
+	flushSecs := envIntOrDefault("SAMTAIL_FLUSH_SECS", 2)
+
+	log.Printf("samtail starting: dir=%s output=%s db=%s listen=%s batch=%d flush=%ds",
+		targetDir, outputDir, dbURL, listenAddr, batchSize, flushSecs)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 创建 Channel（带缓冲，解耦生产消费速率）
-	eventChan := make(chan LogEvent, 256) // Watcher -> TailReader
-	lineChan := make(chan LogLine, 5000)  // TailReader -> BatchWriter
+	// ---- Channels ----
+	eventChan := make(chan LogEvent, 256)
+	lineChan := make(chan LogLine, 5000)
+	entryChan := make(chan LogEntry, 5000)
 
-	// 初始化组件
+	// ---- Database backends ----
+	dbWriter := buildDatabaseWriter(dbURL, outputDir)
+	defer dbWriter.Close()
+
+	// ---- Entry Batcher ----
+	batcher := NewEntryBatcher(dbWriter, batchSize, time.Duration(flushSecs)*time.Second)
+
+	// ---- File watching pipeline ----
 	watcher, err := NewWatcher(targetDir, eventChan)
 	if err != nil {
-		log.Fatalf("创建 Watcher 失败: %v", err)
+		log.Fatalf("create watcher: %v", err)
 	}
 
 	reader := NewTailReader(eventChan, lineChan)
-	err = reader.ReLoad()
-	if err != nil {
-		log.Println(err)
+	if err := reader.ReLoad(); err != nil {
+		log.Printf("load metadata: %v (starting fresh)", err)
 	}
-	writer := NewBatchWriter(lineChan, outputDir)
 
-	// 优雅关闭：捕获信号
+	parser := NewParser(lineChan, entryChan)
+
+	// ---- HTTP Server ----
+	server := NewServer(batcher, listenAddr)
+
+	// ---- Signal handling ----
 	go func() {
-		//用 signal.Notify 捕获 SIGINT/SIGTERM
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 		<-c
+		log.Println("shutting down...")
 		cancel()
 	}()
 
+	// ---- Entry relay (parser + server → batcher) ----
 	var wg sync.WaitGroup
 
+	// Watcher
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		watcher.Run(ctx)
 	}()
 
+	// TailReader
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		reader.Run(ctx)
 	}()
 
+	// Checkpoint writer
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		reader.Checkpoit(ctx)
 	}()
 
+	// Parser: LogLine → LogEntry
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		writer.Run(ctx)
+		parser.Run(ctx)
+	}()
+
+	// Entry relay: entryChan → batcher
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry, ok := <-entryChan:
+				if !ok {
+					return
+				}
+				batcher.Add(entry)
+			}
+		}
+	}()
+
+	// Entry Batcher (time-based flushing)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		batcher.Run(ctx)
+	}()
+
+	// HTTP Server (blocks until shutdown)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := server.Run(); err != nil {
+			log.Printf("server stopped: %v", err)
+		}
 	}()
 
 	wg.Wait()
-	log.Println("监控程序已退出")
+
+	// Final cleanup
+	log.Println("final flush...")
+	batcher.Close()
+	log.Println("samtail stopped")
+}
+
+// buildDatabaseWriter creates a DatabaseWriter based on configuration.
+// If dbURL is empty, only writes to local file backup.
+func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
+	var writers []DatabaseWriter
+
+	// Local file backup
+	if outputDir != "" {
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			log.Printf("create output dir: %v", err)
+		} else {
+			backupPath := filepath.Join(outputDir, fmt.Sprintf("backup_%s.jsonl", time.Now().Format("20060102_150405")))
+			fw, err := NewFileWriter(backupPath)
+			if err != nil {
+				log.Printf("create file writer: %v", err)
+			} else {
+				writers = append(writers, fw)
+				log.Printf("local backup: %s", backupPath)
+			}
+		}
+	}
+
+	// Remote database via HTTP
+	if dbURL != "" {
+		httpWriter := NewHTTPWriter(dbURL, 10*time.Second)
+		writers = append(writers, httpWriter)
+		log.Printf("remote database: %s", dbURL)
+	}
+
+	if len(writers) == 0 {
+		log.Println("no database configured, using noop writer")
+		return &NoopWriter{}
+	}
+	if len(writers) == 1 {
+		return writers[0]
+	}
+	return NewMultiWriter(writers...)
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envIntOrDefault(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
