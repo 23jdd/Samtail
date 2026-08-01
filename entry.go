@@ -100,6 +100,8 @@ func (br *BatchRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BatchResponse SamKv 返回 201 时的响应体，为自动分配的序列号数组。
-// 每个元素对应提交批次中一条 entry，按顺序排列。如 [1, 2, 3]。
-type BatchResponse []int64
+// BatchResponse SamKv 返回 201 时的响应体。
+// 格式：{"sequences":[1, 2, 3]}，每个元素对应提交批次中一条 entry，按顺序排列。
+type BatchResponse struct {
+	Sequences []int64 `json:"sequences"`
+}

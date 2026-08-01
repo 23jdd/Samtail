@@ -79,9 +79,9 @@ func TestIntegration_HTTPWriterToSamKv(t *testing.T) {
 		// SamKv responds with 201 and one sequence per entry
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		seqs := make(BatchResponse, len(req.Entries))
-		for i := range seqs {
-			seqs[i] = int64((i + 1) * 10)
+		seqs := BatchResponse{Sequences: make([]int64, len(req.Entries))}
+		for i := range seqs.Sequences {
+			seqs.Sequences[i] = int64((i + 1) * 10)
 		}
 		json.NewEncoder(w).Encode(seqs)
 	}))

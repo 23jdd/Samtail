@@ -35,7 +35,7 @@ func (n *NoopWriter) Close() error                                     { return 
 // HTTPWriter 通过 POST /logs/batch 发送 JSON 批次到 SamKv。
 //
 // 请求格式：{"entries": [{"labels": {...}, "message": "..."}, ...]}
-// 成功响应：201 Created，body 为序列号数组 [seq1, seq2, ...]，每个对应一条 entry。
+// 成功响应：201 Created，body 为 {"sequences":[seq1, seq2, ...]}，每个对应一条 entry。
 //
 // 可靠性：
 //   - 5xx / 网络错误：指数退避重试（100ms→200ms→400ms），最多 3 次
@@ -111,8 +111,9 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 			var seqs BatchResponse
 			if err := json.Unmarshal(respBody, &seqs); err != nil {
 				log.Printf("[HTTPWriter] 解码序列号失败: %v (body: %s)", err, string(respBody))
-			} else if len(seqs) > 0 {
-				log.Printf("[HTTPWriter] 已写入 %d 条到 %s (201, seq=%d..%d)", len(entries), h.url, seqs[0], seqs[len(seqs)-1])
+			} else if len(seqs.Sequences) > 0 {
+				s := seqs.Sequences
+				log.Printf("[HTTPWriter] 已写入 %d 条到 %s (201, seq=%d..%d)", len(entries), h.url, s[0], s[len(s)-1])
 			} else {
 				log.Printf("[HTTPWriter] 已写入 %d 条到 %s (201)", len(entries), h.url)
 			}

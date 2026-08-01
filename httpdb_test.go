@@ -28,7 +28,7 @@ func TestHTTPWriter_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(BatchResponse{1, 2})
+		json.NewEncoder(w).Encode(BatchResponse{Sequences: []int64{1, 2}})
 	}))
 	defer server.Close()
 
@@ -50,7 +50,7 @@ func TestHTTPWriter_SequenceParsed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(BatchResponse{10, 11, 12})
+		json.NewEncoder(w).Encode(BatchResponse{Sequences: []int64{10, 11, 12}})
 	}))
 	defer server.Close()
 
