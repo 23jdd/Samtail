@@ -1,4 +1,5 @@
 package main
+
 import (
 	"fmt"
 )
@@ -14,4 +15,3 @@ type ID struct {
 func (id ID) String() string {
 	return fmt.Sprintf("%016x:%016x", id.A, id.B)
 }
-

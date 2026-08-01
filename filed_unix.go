@@ -36,5 +36,5 @@ func Same(a, b string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return ida==idb, nil
+	return ida == idb, nil
 }

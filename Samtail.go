@@ -8,9 +8,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -158,7 +160,6 @@ func (t *TailReader) ReLoad() error {
 	return err
 }
 func (t *TailReader) Run(ctx context.Context) {
-	go t.Checkpoit()
 	for {
 		select {
 		case <-ctx.Done():
@@ -251,14 +252,19 @@ func (t *TailReader) readFile(path string) {
 func (t *TailReader) closeFile(path string) {
 	// 可选：清理已删除/重命名文件的 state（保守策略可保留，防止轮转时丢失）
 }
-func (t *TailReader) Checkpoit() {
+func (t *TailReader) Checkpoit(ctx context.Context) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	for {
-		<-ticker.C
-		err := t.SafeWriteFile()
-		if err != nil {
-			log.Println(err)
+		select {
+		case <-ticker.C:
+			err := t.SafeWriteFile()
+			if err != nil {
+				log.Println(err)
+			}
+		case <-ctx.Done():
+			return
 		}
+
 	}
 }
 
@@ -425,26 +431,26 @@ func main() {
 
 	// 优雅关闭：捕获信号
 	go func() {
-		//TODO 用 signal.Notify 捕获 SIGINT/SIGTERM
-		time.Sleep(30 * time.Second) // 演示：运行 30 秒后退出
-		log.Println("开始优雅关闭...")
+		//用 signal.Notify 捕获 SIGINT/SIGTERM
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+		<-c
 		cancel()
 	}()
 
 	var wg sync.WaitGroup
 
-	// Stage 1: Watcher（单 goroutine，fsnotify 非线程安全）
-	
 	wg.Go(func() {
 		watcher.Run(ctx)
 	})
 
-	// Stage 2: TailReader（单 goroutine，文件 offset 需顺序维护）
 	wg.Go(func() {
 		reader.Run(ctx)
 	})
+	wg.Go(func() {
+		reader.Checkpoit(ctx)
+	})
 
-	// Stage 3: BatchWriter（单 goroutine，磁盘顺序写）
 	wg.Go(func() {
 		writer.Run(ctx)
 	})
