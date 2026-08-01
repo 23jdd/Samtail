@@ -26,7 +26,7 @@ const (
 	DefaultDBURL  = "http://127.0.0.1:6379/logs/batch"
 )
 
-// LogEvent 从 fsnotify 转化来的内部事件
+// LogEvent fsnotify 转化来的内部事件
 type LogEvent struct {
 	Op       string // "create", "write", "rename", "remove"
 	FilePath string
@@ -39,13 +39,13 @@ type LogLine struct {
 	Timestamp time.Time
 }
 
-// FileState 跟踪每个文件的读取状态（持久化可防重启丢失）
+// FileState 文件读取偏移量，持久化到 meta.json 防重启丢失
 type FileState struct {
-	Offset int64  // 当前读取偏移量
-	Path   string // 当前路径（可能因轮转改变）
+	Offset int64
+	Path   string
 }
 
-// Watcher
+// Watcher 监控目录，检测 .log/.txt 文件的创建、写入、重命名、删除
 type Watcher struct {
 	watcher   *fsnotify.Watcher
 	eventChan chan LogEvent
@@ -75,7 +75,6 @@ func (w *Watcher) Run(ctx context.Context) {
 	defer close(w.eventChan)
 	defer w.watcher.Close()
 
-	// 启动时扫描现有日志文件，发送 create 事件
 	w.scanExistingFiles()
 
 	for {
@@ -86,7 +85,6 @@ func (w *Watcher) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			// 只关注日志文件
 			if !isLogFile(event.Name) {
 				continue
 			}
@@ -103,13 +101,11 @@ func (w *Watcher) Run(ctx context.Context) {
 			default:
 				continue
 			}
-			// 非阻塞发送，队列满则丢弃（背压保护）
 			select {
 			case w.eventChan <- LogEvent{Op: op, FilePath: event.Name}:
 			default:
 				log.Printf("[Watcher] 事件队列已满，丢弃: %s", event.Name)
 			}
-
 		case err, ok := <-w.watcher.Errors:
 			if !ok {
 				return
@@ -119,7 +115,6 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-// scanExistingFiles 扫描目标目录所有日志文件
 func (w *Watcher) scanExistingFiles() {
 	entries, err := os.ReadDir(w.targetDir)
 	if err != nil {
@@ -129,8 +124,7 @@ func (w *Watcher) scanExistingFiles() {
 		if entry.IsDir() || !isLogFile(entry.Name()) {
 			continue
 		}
-		path := filepath.Join(w.targetDir, entry.Name())
-		w.eventChan <- LogEvent{Op: "create", FilePath: path}
+		w.eventChan <- LogEvent{Op: "create", FilePath: filepath.Join(w.targetDir, entry.Name())}
 	}
 }
 
@@ -138,11 +132,11 @@ func isLogFile(name string) bool {
 	return strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".txt")
 }
 
-// TailReader：文件读取 + Offset 跟踪
+// TailReader 按 inode 跟踪文件读取偏移量，支持断点续读和轮转检测
 type TailReader struct {
 	eventChan chan LogEvent
 	lineChan  chan LogLine
-	states    map[string]*FileState // ID -> state
+	states    map[string]*FileState
 	mu        sync.RWMutex
 }
 
@@ -153,6 +147,7 @@ func NewTailReader(eventChan chan LogEvent, lineChan chan LogLine) *TailReader {
 		states:    make(map[string]*FileState),
 	}
 }
+
 func (t *TailReader) ReLoad() error {
 	r, err := os.Open(MetaFile)
 	if err != nil {
@@ -162,6 +157,7 @@ func (t *TailReader) ReLoad() error {
 	err = json.NewDecoder(r).Decode(&t.states)
 	return err
 }
+
 func (t *TailReader) Run(ctx context.Context) {
 	for {
 		select {
@@ -185,7 +181,6 @@ func (t *TailReader) handleEvent(evt LogEvent) {
 	}
 }
 
-// 核心读取逻辑：按 inode 跟踪，支持追加读取和轮转检测
 func (t *TailReader) readFile(path string) {
 	log.Println("read", path)
 	file, err := os.Open(path)
@@ -194,25 +189,22 @@ func (t *TailReader) readFile(path string) {
 	}
 	defer file.Close()
 
-	// 获取文件 inode
 	id, err := GetLstat(path)
 	if err != nil {
 		return
 	}
+
 	t.mu.Lock()
 	state, exists := t.states[id]
 	if !exists {
-		// 新文件：从开头或末尾读取 生产环境通常从新文件开头读
 		state = &FileState{Offset: 0, Path: path}
 		t.states[id] = state
 	} else if state.Path != path {
-		// 同一个 inode 但路径变了？说明被重命名了，更新路径
 		state.Path = path
 	}
 	offset := state.Offset
 	t.mu.Unlock()
 
-	// 跳到上次读取位置
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		return
 	}
@@ -221,9 +213,7 @@ func (t *TailReader) readFile(path string) {
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
-			// 去掉换行符
 			content := strings.TrimRight(line, "\r\n")
-			// 非阻塞发送
 			select {
 			case t.lineChan <- LogLine{
 				FilePath:  path,
@@ -233,7 +223,6 @@ func (t *TailReader) readFile(path string) {
 			default:
 				log.Printf("[TailReader] lineChan 已满，丢弃一行")
 			}
-			// 更新偏移量（包含换行符长度）
 			offset += int64(len(line))
 		}
 		if err != nil {
@@ -244,7 +233,6 @@ func (t *TailReader) readFile(path string) {
 		}
 	}
 
-	// 写回 offset
 	t.mu.Lock()
 	if s, ok := t.states[id]; ok {
 		s.Offset = offset
@@ -253,25 +241,25 @@ func (t *TailReader) readFile(path string) {
 }
 
 func (t *TailReader) closeFile(path string) {
-	// 可选：清理已删除/重命名文件的 state（保守策略可保留，防止轮转时丢失）
+	// 保守策略：保留 state，防止轮转时丢失
 }
+
+// Checkpoit 每 500ms 将读取状态原子写入 meta.json
 func (t *TailReader) Checkpoit(ctx context.Context) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	for {
 		select {
 		case <-ticker.C:
-			err := t.SafeWriteFile()
-			if err != nil {
+			if err := t.SafeWriteFile(); err != nil {
 				log.Println(err)
 			}
 		case <-ctx.Done():
 			return
 		}
-
 	}
 }
 
-// SafeWriteFile 原子写入文件：要么写入完整新内容，要么保持旧内容不变
+// SafeWriteFile 通过写临时文件 + 原子重命名实现安全写入
 func (t *TailReader) SafeWriteFile() error {
 	tmpFile, err := os.CreateTemp(".", TemplateFile)
 	if err != nil {
@@ -279,13 +267,11 @@ func (t *TailReader) SafeWriteFile() error {
 	}
 	tmpPath := tmpFile.Name()
 
-	// 确保临时文件关闭和清理（失败时删除）
 	defer func() {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 	}()
 
-	//写入数据
 	t.mu.RLock()
 	if err := json.NewEncoder(tmpFile).Encode(t.states); err != nil {
 		t.mu.RUnlock()
@@ -293,22 +279,15 @@ func (t *TailReader) SafeWriteFile() error {
 	}
 	t.mu.RUnlock()
 
-	// 强制刷盘
 	if err = tmpFile.Sync(); err != nil {
 		return fmt.Errorf("fsync temp: %w", err)
 	}
-
-	// 关闭文件描述符
 	if err = tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
 	}
-
-	// 原子重命名：覆盖已存在的目标，或新建
-	// 这一步是原子的，外部只会看到"旧内容"或"完整新内容"
 	if err = os.Rename(tmpPath, MetaFile); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
-
 	return nil
 }
 
@@ -325,19 +304,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ---- Channels ----
 	eventChan := make(chan LogEvent, 256)
 	lineChan := make(chan LogLine, 5000)
 	entryChan := make(chan LogEntry, 5000)
 
-	// ---- Database backends ----
 	dbWriter := buildDatabaseWriter(dbURL, outputDir)
 	defer dbWriter.Close()
 
-	// ---- Entry Batcher ----
 	batcher := NewEntryBatcher(dbWriter, batchSize, time.Duration(flushSecs)*time.Second)
 
-	// ---- File watching pipeline ----
 	watcher, err := NewWatcher(targetDir, eventChan)
 	if err != nil {
 		log.Fatalf("create watcher: %v", err)
@@ -350,7 +325,6 @@ func main() {
 
 	parser := NewParser(lineChan, entryChan)
 
-	// ---- Signal handling ----
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
@@ -361,35 +335,18 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Watcher
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		watcher.Run(ctx)
-	}()
+	go func() { defer wg.Done(); watcher.Run(ctx) }()
 
-	// TailReader
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		reader.Run(ctx)
-	}()
+	go func() { defer wg.Done(); reader.Run(ctx) }()
 
-	// Checkpoint writer
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		reader.Checkpoit(ctx)
-	}()
+	go func() { defer wg.Done(); reader.Checkpoit(ctx) }()
 
-	// Parser: LogLine → LogEntry
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		parser.Run(ctx)
-	}()
+	go func() { defer wg.Done(); parser.Run(ctx) }()
 
-	// Entry relay: entryChan → batcher
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -406,34 +363,25 @@ func main() {
 		}
 	}()
 
-	// Entry Batcher (time-based flushing)
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		batcher.Run(ctx)
-	}()
+	go func() { defer wg.Done(); batcher.Run(ctx) }()
 
 	wg.Wait()
 
-	// Final cleanup
 	log.Println("final flush...")
 	batcher.Close()
 	log.Println("samtail stopped")
 }
 
-// buildDatabaseWriter creates a DatabaseWriter based on configuration.
-// If dbURL is empty, only writes to local file backup.
 func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	var writers []DatabaseWriter
 
-	// Local file backup
 	if outputDir != "" {
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			log.Printf("create output dir: %v", err)
 		} else {
 			backupPath := filepath.Join(outputDir, fmt.Sprintf("backup_%s.jsonl", time.Now().Format("20060102_150405")))
-			fw, err := NewFileWriter(backupPath)
-			if err != nil {
+			if fw, err := NewFileWriter(backupPath); err != nil {
 				log.Printf("create file writer: %v", err)
 			} else {
 				writers = append(writers, fw)
@@ -442,10 +390,8 @@ func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 		}
 	}
 
-	// Remote database via HTTP
 	if dbURL != "" {
-		httpWriter := NewHTTPWriter(dbURL, 10*time.Second)
-		writers = append(writers, httpWriter)
+		writers = append(writers, NewHTTPWriter(dbURL, 10*time.Second))
 		log.Printf("remote database: %s", dbURL)
 	}
 
