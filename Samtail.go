@@ -137,7 +137,7 @@ func isLogFile(name string) bool {
 type TailReader struct {
 	eventChan chan LogEvent
 	lineChan  chan LogLine
-	states    map[ID]*FileState // ID -> state
+	states    map[string]*FileState // ID -> state
 	mu        sync.RWMutex
 }
 
@@ -145,11 +145,12 @@ func NewTailReader(eventChan chan LogEvent, lineChan chan LogLine) *TailReader {
 	return &TailReader{
 		eventChan: eventChan,
 		lineChan:  lineChan,
-		states:    make(map[ID]*FileState),
+		states:    make(map[string]*FileState),
 	}
 }
 
 func (t *TailReader) Run(ctx context.Context) {
+	go t.Checkpoit()
 	for {
 		select {
 		case <-ctx.Done():
@@ -239,20 +240,6 @@ func (t *TailReader) readFile(path string) {
 	t.mu.Unlock()
 }
 
-// 定期轮询：处理 fsnotify 可能遗漏的持续写入
-func (t *TailReader) pollAllFiles() {
-	t.mu.RLock()
-	paths := make([]string, 0, len(t.states))
-	for _, state := range t.states {
-		paths = append(paths, state.Path)
-	}
-	t.mu.RUnlock()
-
-	for _, path := range paths {
-		t.readFile(path)
-	}
-}
-
 func (t *TailReader) closeFile(path string) {
 	// 可选：清理已删除/重命名文件的 state（保守策略可保留，防止轮转时丢失）
 }
@@ -260,7 +247,10 @@ func (t *TailReader) Checkpoit() {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	for {
 		<-ticker.C
-		t.SafeWriteFile()
+		err := t.SafeWriteFile()
+		if err != nil {
+			log.Println(err)
+		}
 	}
 }
 
@@ -275,15 +265,16 @@ func (t *TailReader) SafeWriteFile() error {
 	// 确保临时文件关闭和清理（失败时删除）
 	defer func() {
 		tmpFile.Close()
-		if err != nil {
-			os.Remove(tmpPath)
-		}
+		os.Remove(tmpPath)
 	}()
 
 	//写入数据
+	t.mu.RLock()
 	if err := json.NewEncoder(tmpFile).Encode(t.states); err != nil {
+		t.mu.RUnlock()
 		return fmt.Errorf("write temp: %w", err)
 	}
+	t.mu.RUnlock()
 
 	// 强制刷盘
 	if err = tmpFile.Sync(); err != nil {

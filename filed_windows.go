@@ -9,10 +9,10 @@ import (
 )
 
 // Get 返回 path 指向的文件唯一标识
-func Get(path string) (ID, error) {
+func Get(path string) (string, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return ID{}, fmt.Errorf("invalid path %s: %w", path, err)
+		return "", fmt.Errorf("invalid path %s: %w", path, err)
 	}
 
 	// FILE_FLAG_BACKUP_SEMANTICS 允许打开目录
@@ -26,23 +26,23 @@ func Get(path string) (ID, error) {
 		0,
 	)
 	if err != nil {
-		return ID{}, fmt.Errorf("open %s: %w", path, err)
+		return "", fmt.Errorf("open %s: %w", path, err)
 	}
 	defer windows.CloseHandle(h)
 
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
-		return ID{}, fmt.Errorf("get info %s: %w", path, err)
+		return "", fmt.Errorf("get info %s: %w", path, err)
 	}
 
 	vol := uint64(info.VolumeSerialNumber)
 	idx := uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow)
 
-	return ID{A: vol, B: idx}, nil
+	return ID{A: vol, B: idx}.String(), nil
 }
 
 // GetLstat 在 Windows 上等同于 Get（符号链接本身没有独立的 FileIndex）
-func GetLstat(path string) (ID, error) {
+func GetLstat(path string) (string, error) {
 	return Get(path)
 }
 
@@ -56,5 +56,5 @@ func Same(a, b string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return ida.Equal(idb), nil
+	return ida==idb, nil
 }
