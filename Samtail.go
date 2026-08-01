@@ -41,7 +41,11 @@ type Watcher struct {
 	targetDir string
 }
 
-func NewWatcher(dir string) (*Watcher, error) {
+func NewWatcher(dir string, eventChan chan LogEvent) (*Watcher, error) {
+	absPath, _ := filepath.Abs(dir)
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		log.Fatalf("路径不存在: %s", absPath)
+	}
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -51,7 +55,7 @@ func NewWatcher(dir string) (*Watcher, error) {
 	}
 	return &Watcher{
 		watcher:   fw,
-		eventChan: make(chan LogEvent, 256), // 缓冲避免事件丢失
+		eventChan: eventChan,
 		targetDir: dir,
 	}, nil
 }
@@ -140,10 +144,6 @@ func NewTailReader(eventChan chan LogEvent, lineChan chan LogLine) *TailReader {
 }
 
 func (t *TailReader) Run(ctx context.Context) {
-	// 定期扫描已打开文件的写入（兜底，防止 fsnotify 漏事件）
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -153,8 +153,6 @@ func (t *TailReader) Run(ctx context.Context) {
 				return
 			}
 			t.handleEvent(evt)
-		case <-ticker.C:
-			t.pollAllFiles()
 		}
 	}
 }
@@ -170,6 +168,7 @@ func (t *TailReader) handleEvent(evt LogEvent) {
 
 // 核心读取逻辑：按 inode 跟踪，支持追加读取和轮转检测
 func (t *TailReader) readFile(path string) {
+	log.Println("read", path)
 	file, err := os.Open(path)
 	if err != nil {
 		return
@@ -350,7 +349,7 @@ func (b *BatchWriter) flush() {
 // ==================== 4. 主程序：组装流水线 ====================
 
 func main() {
-	targetDir := "./logs"   // 监控目录
+	targetDir := "logs"     // 监控目录
 	outputDir := "./output" // 存储目录
 
 	// 创建带取消的上下文
@@ -362,10 +361,11 @@ func main() {
 	lineChan := make(chan LogLine, 5000)  // TailReader -> BatchWriter
 
 	// 初始化组件
-	watcher, err := NewWatcher(targetDir)
+	watcher, err := NewWatcher(targetDir, eventChan)
 	if err != nil {
 		log.Fatalf("创建 Watcher 失败: %v", err)
 	}
+
 	reader := NewTailReader(eventChan, lineChan)
 	writer := NewBatchWriter(lineChan, outputDir)
 
