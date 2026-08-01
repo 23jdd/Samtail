@@ -342,7 +342,7 @@ func main() {
 	}()
 
 	// 启动所有管道组件（使用 WaitGroup 确保全部退出后才清理）
-	var wg WaitGroup
+	var wg sync.WaitGroup
 	wg.Go(func() { watcher.Run(ctx) })       // 文件监控
 	wg.Go(func() { reader.Run(ctx) })        // 增量读取
 	wg.Go(func() { reader.Checkpoit(ctx) })  // 偏移量持久化
@@ -406,21 +406,7 @@ func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	return NewMultiWriter(writers...)
 }
 
-// WaitGroup 对 sync.WaitGroup 的包装，提供 .Go(func()) 语法糖。
-// Go 在 new goroutine 中启动 f，f 返回时自动 Done。f 不得 panic。
-type WaitGroup struct {
-	wg sync.WaitGroup
-}
 
-func (wg *WaitGroup) Go(f func()) {
-	wg.wg.Add(1)
-	go func() {
-		defer wg.wg.Done()
-		f()
-	}()
-}
-
-func (wg *WaitGroup) Wait() { wg.wg.Wait() }
 
 // envOrDefault 读取环境变量，不存在时返回默认值。
 func envOrDefault(key, def string) string {
