@@ -23,8 +23,7 @@ const (
 	TemplateFile  = "meta_template_*.json"
 	DefaultDir    = "logs"
 	DefaultOutDir = "./output"
-	DefaultDBURL  = "http://127.0.0.1:9999/logs/batch"
-	DefaultListen = ":9999"
+	DefaultDBURL  = "http://127.0.0.1:6379/logs/batch"
 )
 
 // LogEvent 从 fsnotify 转化来的内部事件
@@ -412,12 +411,11 @@ func main() {
 	targetDir := envOrDefault("SAMTAIL_DIR", DefaultDir)
 	outputDir := envOrDefault("SAMTAIL_OUTPUT", DefaultOutDir)
 	dbURL := envOrDefault("SAMTAIL_DB_URL", DefaultDBURL)
-	listenAddr := envOrDefault("SAMTAIL_LISTEN", DefaultListen)
 	batchSize := envIntOrDefault("SAMTAIL_BATCH_SIZE", 1000)
 	flushSecs := envIntOrDefault("SAMTAIL_FLUSH_SECS", 2)
 
-	log.Printf("samtail starting: dir=%s output=%s db=%s listen=%s batch=%d flush=%ds",
-		targetDir, outputDir, dbURL, listenAddr, batchSize, flushSecs)
+	log.Printf("samtail starting: dir=%s output=%s db=%s batch=%d flush=%ds",
+		targetDir, outputDir, dbURL, batchSize, flushSecs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -447,9 +445,6 @@ func main() {
 
 	parser := NewParser(lineChan, entryChan)
 
-	// ---- HTTP Server ----
-	server := NewServer(batcher, listenAddr)
-
 	// ---- Signal handling ----
 	go func() {
 		c := make(chan os.Signal, 1)
@@ -459,7 +454,6 @@ func main() {
 		cancel()
 	}()
 
-	// ---- Entry relay (parser + server → batcher) ----
 	var wg sync.WaitGroup
 
 	// Watcher
@@ -512,15 +506,6 @@ func main() {
 	go func() {
 		defer wg.Done()
 		batcher.Run(ctx)
-	}()
-
-	// HTTP Server (blocks until shutdown)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := server.Run(); err != nil {
-			log.Printf("server stopped: %v", err)
-		}
 	}()
 
 	wg.Wait()
