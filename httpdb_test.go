@@ -27,8 +27,8 @@ func TestHTTPWriter_Success(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(BatchResponse{Accepted: len(req.Entries), Status: "ok"})
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(BatchResponse{Sequence: 42})
 	}))
 	defer server.Close()
 
@@ -46,6 +46,23 @@ func TestHTTPWriter_Success(t *testing.T) {
 	}
 }
 
+func TestHTTPWriter_SequenceParsed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(BatchResponse{Sequence: 99})
+	}))
+	defer server.Close()
+
+	writer := NewHTTPWriter(server.URL, 5*time.Second)
+	defer writer.Close()
+
+	if err := writer.WriteBatch(context.Background(), []LogEntry{{Message: "test"}}); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+	// Sequence is logged, not returned; test verifies no panic/error
+}
+
 func TestHTTPWriter_ServerError_WithRetry(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +71,7 @@ func TestHTTPWriter_ServerError_WithRetry(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
 

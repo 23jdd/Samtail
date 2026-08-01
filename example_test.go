@@ -56,27 +56,24 @@ func Example_batchWriter() {
 	_ = batcher.Close()
 }
 
-// Example_httpServer demonstrates setting up the HTTP server that accepts
-// log entries via POST /logs/batch.
+// Example_httpWriter demonstrates sending log entries to a SamKv database
+// via HTTPWriter.
 //
-// Clients can send entries using:
+// SamKv responds with HTTP 201 Created and an auto-assigned sequence number:
 //
-//	curl -X POST http://127.0.0.1:9999/logs/batch \
-//	  -H "Content-Type: application/json" \
-//	  -d '{"entries":[{"labels":{"app":"api"},"message":"request started"}]}'
-func Example_httpServer() {
-	batcher := NewEntryBatcher(&NoopWriter{}, 100, time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+//	{"sequence": 42}
+//
+// The sequence is logged for observability.
+func Example_httpWriter() {
+	writer := NewHTTPWriter("http://127.0.0.1:6379/logs/batch", 10*time.Second)
+	defer writer.Close()
 
-	go batcher.Run(ctx)
-
-	server := NewServer(batcher, ":9999")
-	go server.Run()
-
-	// Server runs until context is cancelled
-	time.Sleep(100 * time.Millisecond)
-	server.Shutdown(ctx)
+	ctx := context.Background()
+	entries := []LogEntry{
+		{Labels: map[string]string{"app": "api"}, Message: "request started"},
+		{Labels: map[string]string{"app": "api", "level": "ERROR"}, Message: "request failed"},
+	}
+	_ = writer.WriteBatch(ctx, entries)
 }
 
 // Example_multiWriter demonstrates sending logs to multiple backends

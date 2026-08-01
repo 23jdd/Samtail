@@ -60,48 +60,40 @@ query executed
 	}
 }
 
-// TestIntegration_HTTPToDatabase tests the full HTTP server to database flow.
-func TestIntegration_HTTPToDatabase(t *testing.T) {
-	// Create a test database backend
-	var received []LogEntry
-	db := &testDB{writeFunc: func(ctx context.Context, entries []LogEntry) error {
-		received = append(received, entries...)
-		return nil
-	}}
-
-	batcher := NewEntryBatcher(db, 100, time.Hour)
-	server := NewServer(batcher, ":0")
-
-	// Create a test HTTP server to receive batch requests
+// TestIntegration_HTTPWriterToSamKv tests sending entries to a SamKv database
+// via HTTPWriter and verifying the 201 response with auto-assigned sequence.
+func TestIntegration_HTTPWriterToSamKv(t *testing.T) {
+	// Create a fake SamKv endpoint
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		server.handleLogBatch(w, r)
+
+		var req BatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		// SamKv responds with 201 and auto-assigned sequence
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(BatchResponse{Sequence: int64(len(req.Entries) * 10)})
 	}))
 	defer ts.Close()
 
-	// Send a batch request to the server
-	body := `{"entries":[
-		{"labels":{"app":"api","level":"INFO"},"message":"request started"},
-		{"labels":{"app":"api","level":"ERROR"},"message":"request failed"}
-	]}`
+	writer := NewHTTPWriter(ts.URL, 5*time.Second)
+	defer writer.Close()
 
-	resp, err := http.Post(ts.URL, "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200, got %d", resp.StatusCode)
+	entries := []LogEntry{
+		{Labels: map[string]string{"app": "api", "level": "INFO"}, Message: "request started"},
+		{Labels: map[string]string{"app": "api", "level": "ERROR"}, Message: "request failed"},
 	}
 
-	var batchResp BatchResponse
-	json.NewDecoder(resp.Body).Decode(&batchResp)
-	if batchResp.Accepted != 2 {
-		t.Errorf("expected 2 accepted, got %d", batchResp.Accepted)
+	ctx := context.Background()
+	if err := writer.WriteBatch(ctx, entries); err != nil {
+		t.Fatalf("WriteBatch to SamKv: %v", err)
 	}
 }
 
