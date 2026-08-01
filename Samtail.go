@@ -333,13 +333,12 @@ func main() {
 		cancel()
 	}()
 
-	var wg sync.WaitGroup
-
-	wgDo(&wg, func() { watcher.Run(ctx) })
-	wgDo(&wg, func() { reader.Run(ctx) })
-	wgDo(&wg, func() { reader.Checkpoit(ctx) })
-	wgDo(&wg, func() { parser.Run(ctx) })
-	wgDo(&wg, func() {
+	var wg WaitGroup
+	wg.Go(func() { watcher.Run(ctx) })
+	wg.Go(func() { reader.Run(ctx) })
+	wg.Go(func() { reader.Checkpoit(ctx) })
+	wg.Go(func() { parser.Run(ctx) })
+	wg.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -352,8 +351,7 @@ func main() {
 			}
 		}
 	})
-	wgDo(&wg, func() { batcher.Run(ctx) })
-
+	wg.Go(func() { batcher.Run(ctx) })
 	wg.Wait()
 
 	log.Println("final flush...")
@@ -393,7 +391,21 @@ func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	return NewMultiWriter(writers...)
 }
 
-func wgDo(wg *sync.WaitGroup, fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
+// WaitGroup 是对 sync.WaitGroup 的包装，提供 .Go(func()) 语法糖。
+// Go 在 new goroutine 中启动 f，f 返回时自动 Done。f 不得 panic。
+type WaitGroup struct {
+	wg sync.WaitGroup
+}
+
+func (wg *WaitGroup) Go(f func()) {
+	wg.wg.Add(1)
+	go func() {
+		defer wg.wg.Done()
+		f()
+	}()
+}
+
+func (wg *WaitGroup) Wait() { wg.wg.Wait() }
 
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
