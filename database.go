@@ -13,51 +13,49 @@ import (
 	"time"
 )
 
-// DatabaseWriter defines the interface for writing batches of log entries
-// to a backend storage system.
+// DatabaseWriter 定义了将批量日志条目写入后端存储系统的接口。
 //
-// Implementations include:
-//   - HTTPWriter: sends entries via HTTP POST to a remote server
-//   - FileWriter: writes entries to a local file for backup/debugging
-//   - MultiWriter: fans out writes to multiple DatabaseWriter backends
-//   - NoopWriter: discards all entries (useful for testing)
+// 实现包括：
+//   - HTTPWriter: 通过 HTTP POST 将条目发送到 SamKv 服务器
+//   - FileWriter: 将条目写入本地文件用于备份/调试
+//   - MultiWriter: 将写入扇出到多个 DatabaseWriter 后端
+//   - NoopWriter: 丢弃所有条目（用于测试）
 //
-// Usage example:
+// 用法示例：
 //
 //	db := NewMultiWriter(
-//	    NewHTTPWriter("http://127.0.0.1:9999/logs/batch", 10*time.Second),
+//	    NewHTTPWriter("http://127.0.0.1:6379/logs/batch", 10*time.Second),
 //	    NewFileWriter("output/backup.log"),
 //	)
 //	err := db.WriteBatch(ctx, entries)
 //
-// Boundary conditions:
-//   - WriteBatch with nil or empty entries: must not panic, should be a no-op
-//   - Concurrent calls to WriteBatch: implementations must document thread safety
-//   - Context cancellation: implementations should respect context deadlines
-//   - Large batches: implementations should handle batches of any size
-//     (consumers may set their own limits)
+// 边界条件：
+//   - WriteBatch 传入 nil 或空 entries：不得 panic，应为空操作
+//   - WriteBatch 并发调用：实现必须记录线程安全性
+//   - Context 取消：实现应遵守 context 截止时间
+//   - 大批次：实现应能处理任意大小的批次（消费者可自行设置上限）
 type DatabaseWriter interface {
-	// WriteBatch writes a batch of log entries to the backend.
-	// The context can be used for cancellation and timeouts.
-	// Returns an error if the write fails.
+	// WriteBatch 将批量日志条目写入后端。
+	// ctx 可用于取消和超时控制。
+	// 写入失败时返回错误。
 	WriteBatch(ctx context.Context, entries []LogEntry) error
 
-	// Close releases any resources held by the writer.
-	// After Close, WriteBatch should return an error.
+	// Close 释放 writer 持有的所有资源。
+	// Close 后 WriteBatch 应返回错误。
 	Close() error
 }
 
 // ============================================================================
-// NoopWriter - discards all entries (useful for testing and benchmarks)
+// NoopWriter - 丢弃所有条目（用于测试和基准测试）
 // ============================================================================
 
-// NoopWriter is a DatabaseWriter that discards all entries.
-// It is safe for concurrent use and always succeeds.
+// NoopWriter 是一个丢弃所有条目的 DatabaseWriter。
+// 并发安全，始终成功。
 //
-// Usage:
+// 用法：
 //
 //	db := &NoopWriter{}
-//	db.WriteBatch(ctx, entries) // always returns nil
+//	db.WriteBatch(ctx, entries) // 始终返回 nil
 type NoopWriter struct{}
 
 func (n *NoopWriter) WriteBatch(_ context.Context, _ []LogEntry) error {
@@ -69,38 +67,37 @@ func (n *NoopWriter) Close() error {
 }
 
 // ============================================================================
-// HTTPWriter - sends entries via HTTP POST
+// HTTPWriter - 通过 HTTP POST 发送条目到 SamKv
 // ============================================================================
 
-// HTTPWriter implements DatabaseWriter by sending batches as JSON
-// to a remote SamKv database endpoint.
+// HTTPWriter 通过发送 JSON 批次到 SamKv 数据库端点来实现 DatabaseWriter。
 //
-// It uses the POST /logs/batch format:
+// 使用 POST /logs/batch 格式：
 //
 //	POST /logs/batch
 //	Content-Type: application/json
 //	{"entries":[{"labels":{...},"message":"..."},...]}
 //
-// SamKv responds with HTTP 201 Created and an auto-assigned sequence number array:
+// SamKv 返回 HTTP 201 Created 和自动分配的序列号数组：
 //
 //	[1, 2, 3]
 //
-// Each element is the sequence for the corresponding entry in the batch.
+// 数组中的每个元素对应批次中相应 entry 的序列号。
 //
-// Features:
-//   - Configurable timeout per request
-//   - Retries on transient errors (5xx, network errors) up to maxRetries
-//   - Thread-safe: uses an internal mutex and a shared http.Client
+// 特性：
+//   - 每个请求可配置超时时间
+//   - 对 5xx 和网络错误最多重试 maxRetries 次
+//   - 线程安全：使用内部互斥锁和共享 http.Client
 //
-// Boundary conditions:
-//   - Empty entries slice: skips the HTTP request (no-op)
-//   - Network timeout: returns error after retries exhausted
-//   - Non-201 response (4xx): returns error without retry (client error)
-//   - Non-201 response (5xx): retries up to maxRetries with exponential backoff
-//   - Response body >= 10KB: truncated in error messages to prevent log spam
-//   - Response body is not valid JSON array: sequences are ignored, no error
+// 边界条件：
+//   - 空 entries 切片：跳过 HTTP 请求（空操作）
+//   - 网络超时：全部重试耗尽后返回错误
+//   - 非 201 响应（4xx）：返回错误不重试（客户端错误）
+//   - 非 201 响应（5xx）：以指数退避重试最多 maxRetries 次
+//   - 响应体 >= 10KB：在错误消息中截断，防止日志刷屏
+//   - 响应体不是合法 JSON 数组：序列号被忽略，不返回错误
 //
-// Example:
+// 示例：
 //
 //	writer := NewHTTPWriter("http://127.0.0.1:6379/logs/batch", 5*time.Second)
 //	defer writer.Close()
@@ -114,8 +111,8 @@ type HTTPWriter struct {
 	closed     bool
 }
 
-// NewHTTPWriter creates an HTTPWriter with the given endpoint URL and timeout.
-// maxRetries defaults to 3.
+// NewHTTPWriter 用指定的端点 URL 和超时时间创建 HTTPWriter。
+// maxRetries 默认为 3。
 func NewHTTPWriter(url string, timeout time.Duration) *HTTPWriter {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
@@ -150,9 +147,9 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 	var lastErr error
 	for attempt := 0; attempt <= h.maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 100ms, 200ms, 400ms
+			// 指数退避：100ms, 200ms, 400ms
 			backoff := time.Duration(100*(1<<(attempt-1))) * time.Millisecond
-			log.Printf("[HTTPWriter] retry attempt %d/%d after %v", attempt, h.maxRetries, backoff)
+			log.Printf("[HTTPWriter] 重试 %d/%d，等待 %v", attempt, h.maxRetries, backoff)
 
 			select {
 			case <-ctx.Done():
@@ -173,28 +170,28 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 			continue
 		}
 
-		// Read body for sequence number or error info
+		// 读取响应体以获取序列号或错误信息
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024))
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusCreated {
 			var seqs BatchResponse
 			if err := json.Unmarshal(respBody, &seqs); err != nil {
-				log.Printf("[HTTPWriter] failed to decode sequences from response: %v (body: %s)", err, string(respBody))
+				log.Printf("[HTTPWriter] 解码序列号失败: %v (body: %s)", err, string(respBody))
 			} else if len(seqs) > 0 {
-				log.Printf("[HTTPWriter] wrote %d entries to %s (201, seq=%d..%d)", len(entries), h.url, seqs[0], seqs[len(seqs)-1])
+				log.Printf("[HTTPWriter] 已写入 %d 条到 %s (201, seq=%d..%d)", len(entries), h.url, seqs[0], seqs[len(seqs)-1])
 			} else {
-				log.Printf("[HTTPWriter] wrote %d entries to %s (201)", len(entries), h.url)
+				log.Printf("[HTTPWriter] 已写入 %d 条到 %s (201)", len(entries), h.url)
 			}
 			return nil
 		}
 
-		// Client errors (4xx) are not retried
+		// 客户端错误（4xx）不重试
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return fmt.Errorf("HTTPWriter: server rejected batch (status %d): %s", resp.StatusCode, string(respBody))
 		}
 
-		// Server errors (5xx) are retried
+		// 服务端错误（5xx）重试
 		lastErr = fmt.Errorf("HTTPWriter: server error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
@@ -212,25 +209,25 @@ func (h *HTTPWriter) Close() error {
 }
 
 // ============================================================================
-// FileWriter - writes entries to a local file as JSON lines
+// FileWriter - 将条目以 JSON 行格式写入本地文件
 // ============================================================================
 
-// FileWriter implements DatabaseWriter by appending JSON-encoded entries
-// to a local file. Each line contains one LogEntry as JSON.
+// FileWriter 通过将 JSON 编码的条目追加到本地文件来实现 DatabaseWriter。
+// 每行包含一条 JSON 格式的 LogEntry。
 //
-// Useful for:
-//   - Local backup/audit trail
-//   - Debugging and development
-//   - Offline mode when the database is unreachable
+// 适用场景：
+//   - 本地备份/审计跟踪
+//   - 调试和开发
+//   - 数据库不可达时的离线模式
 //
-// Boundary conditions:
-//   - File does not exist: created automatically
-//   - Empty entries slice: no-op (no empty lines written)
-//   - Directory does not exist: returns error on first WriteBatch
-//   - Concurrent writes: protected by internal mutex
-//   - File permissions: created with 0644
+// 边界条件：
+//   - 文件不存在：自动创建
+//   - 空 entries 切片：空操作（不写入空行）
+//   - 目录不存在：首次 WriteBatch 时返回错误
+//   - 并发写入：由内部互斥锁保护
+//   - 文件权限：创建时使用 0644
 //
-// Example:
+// 示例：
 //
 //	writer, err := NewFileWriter("logs/backup.jsonl")
 //	if err != nil { ... }
@@ -243,7 +240,7 @@ type FileWriter struct {
 	closed bool
 }
 
-// NewFileWriter creates or opens the file at the given path.
+// NewFileWriter 在指定路径创建或打开文件。
 func NewFileWriter(path string) (*FileWriter, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -278,7 +275,7 @@ func (f *FileWriter) WriteBatch(_ context.Context, entries []LogEntry) error {
 		return fmt.Errorf("FileWriter: fsync: %w", err)
 	}
 
-	log.Printf("[FileWriter] wrote %d entries to %s", len(entries), f.path)
+	log.Printf("[FileWriter] 已写入 %d 条到 %s", len(entries), f.path)
 	return nil
 }
 
@@ -293,19 +290,19 @@ func (f *FileWriter) Close() error {
 }
 
 // ============================================================================
-// MultiWriter - fans out writes to multiple DatabaseWriter backends
+// MultiWriter - 将写入扇出到多个 DatabaseWriter 后端
 // ============================================================================
 
-// MultiWriter implements DatabaseWriter by delegating to multiple writers.
-// If any writer fails, the error is logged but writing continues to
-// remaining writers. The first error encountered is returned.
+// MultiWriter 通过将写入委托给多个 writer 来实现 DatabaseWriter。
+// 如果任一 writer 失败，错误会被记录日志，但写入继续到其余 writer。
+// 返回遇到的第一个错误。
 //
-// Boundary conditions:
-//   - Nil or empty writers slice: acts as NoopWriter
-//   - One writer fails: others continue, first error returned
-//   - Close: all writers are closed, errors are collected
+// 边界条件：
+//   - nil 或空 writers 切片：行为同 NoopWriter
+//   - 一个 writer 失败：其他继续，返回第一个错误
+//   - Close：关闭所有 writer，收集所有错误
 //
-// Example:
+// 示例：
 //
 //	db := NewMultiWriter(
 //	    NewHTTPWriter("http://db.example.com/logs", 5*time.Second),
@@ -315,7 +312,7 @@ type MultiWriter struct {
 	writers []DatabaseWriter
 }
 
-// NewMultiWriter creates a MultiWriter that fans out to all given writers.
+// NewMultiWriter 创建一个扇出到所有给定 writer 的 MultiWriter。
 func NewMultiWriter(writers ...DatabaseWriter) *MultiWriter {
 	return &MultiWriter{writers: writers}
 }
@@ -328,7 +325,7 @@ func (m *MultiWriter) WriteBatch(ctx context.Context, entries []LogEntry) error 
 	var firstErr error
 	for _, w := range m.writers {
 		if err := w.WriteBatch(ctx, entries); err != nil {
-			log.Printf("[MultiWriter] writer failed: %v", err)
+			log.Printf("[MultiWriter] writer 失败: %v", err)
 			if firstErr == nil {
 				firstErr = err
 			}

@@ -6,13 +6,12 @@ import (
 	"time"
 )
 
-// LogEntry represents a single parsed log entry with labels and a message.
+// LogEntry 表示一条解析后的日志条目，包含标签和消息。
 //
-// It is the unified internal representation used across the pipeline:
-// logs read from files are parsed into LogEntry, and the HTTP server
-// accepts LogEntry objects directly.
+// 它是整个管道中统一的内部表示：从文件读取的日志解析为 LogEntry，
+// 然后由 HTTPWriter 发送给 SamKv。
 //
-// Example raw log file format:
+// 原始日志文件格式示例：
 //
 //	app=api,level=INFO
 //	request started
@@ -20,7 +19,7 @@ import (
 //	app=api,level=ERROR
 //	request failed
 //
-// This would produce two LogEntry objects:
+// 上述格式会解析为两个 LogEntry 对象：
 //
 //	{Labels: {"app":"api","level":"INFO"}, Message: "request started"}
 //	{Labels: {"app":"api","level":"ERROR"}, Message: "request failed"}
@@ -30,12 +29,12 @@ type LogEntry struct {
 	Timestamp time.Time         `json:"timestamp,omitempty"`
 }
 
-// NewLogEntry creates a new LogEntry with initialized labels map.
+// NewLogEntry 创建一个 LogEntry，labels 为 nil 时自动初始化为空 map。
 //
-// Boundary conditions:
-//   - labels can be nil (creates empty map)
-//   - message can be empty (valid, represents an empty log line)
-//   - timestamp defaults to zero time
+// 边界条件：
+//   - labels 可以为 nil（自动创建空 map）
+//   - message 可以为空（合法，表示空日志行）
+//   - timestamp 默认为零值时间
 func NewLogEntry(labels map[string]string, message string) LogEntry {
 	if labels == nil {
 		labels = make(map[string]string)
@@ -46,9 +45,9 @@ func NewLogEntry(labels map[string]string, message string) LogEntry {
 	}
 }
 
-// WithTimestamp returns a copy of the entry with the given timestamp set.
+// WithTimestamp 返回设置了指定时间戳的副本。
 //
-// Usage:
+// 用法：
 //
 //	entry := NewLogEntry(map[string]string{"app":"api"}, "started").WithTimestamp(time.Now())
 func (e LogEntry) WithTimestamp(t time.Time) LogEntry {
@@ -56,7 +55,7 @@ func (e LogEntry) WithTimestamp(t time.Time) LogEntry {
 	return e
 }
 
-// GetLabel returns a label value by key, or empty string if not present.
+// GetLabel 根据 key 返回标签值，不存在时返回空字符串。
 func (e LogEntry) GetLabel(key string) string {
 	if e.Labels == nil {
 		return ""
@@ -64,14 +63,13 @@ func (e LogEntry) GetLabel(key string) string {
 	return e.Labels[key]
 }
 
-// HasLabel returns true if the entry has the given label key.
+// HasLabel 判断 entry 是否包含给定的标签 key。
 func (e LogEntry) HasLabel(key string) bool {
 	_, ok := e.Labels[key]
 	return ok
 }
 
-// LabelKeys returns a sorted list of all label keys.
-// Useful for consistent iteration.
+// LabelKeys 返回所有标签 key 的排序列表，便于一致的遍历。
 func (e LogEntry) LabelKeys() []string {
 	keys := make([]string, 0, len(e.Labels))
 	for k := range e.Labels {
@@ -81,12 +79,12 @@ func (e LogEntry) LabelKeys() []string {
 	return keys
 }
 
-// Validate checks that the entry is valid for processing.
+// Validate 检查 entry 是否合法。
 //
-// Boundary conditions:
-//   - returns an error if Message is empty (no useful log)
-//   - Labels may be empty (valid, though unusual)
-//   - Labels with empty keys or values are rejected
+// 边界条件：
+//   - Message 为空时返回错误（无有效日志内容）
+//   - Labels 可以为空（合法但少见）
+//   - Label key 或 value 为空时被拒绝
 func (e LogEntry) Validate() error {
 	if len(e.Message) == 0 {
 		return &ValidationError{Field: "message", Reason: "message must not be empty"}
@@ -102,7 +100,7 @@ func (e LogEntry) Validate() error {
 	return nil
 }
 
-// ValidationError is returned when a LogEntry fails validation.
+// ValidationError 在 LogEntry 校验不通过时返回。
 type ValidationError struct {
 	Field  string
 	Reason string
@@ -112,9 +110,9 @@ func (ve *ValidationError) Error() string {
 	return "validation error: " + ve.Field + ": " + ve.Reason
 }
 
-// BatchRequest is the top-level JSON structure for the POST /logs/batch endpoint.
+// BatchRequest 是 POST /logs/batch 端点的顶层 JSON 结构。
 //
-// Example JSON body:
+// JSON 请求体示例：
 //
 //	{
 //	  "entries": [
@@ -126,8 +124,7 @@ type BatchRequest struct {
 	Entries []LogEntry `json:"entries"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for BatchRequest
-// to validate entries after parsing.
+// UnmarshalJSON 实现 BatchRequest 的自定义 JSON 反序列化，用于解析后校验 entries。
 func (br *BatchRequest) UnmarshalJSON(data []byte) error {
 	type alias BatchRequest
 	var a alias
@@ -138,12 +135,11 @@ func (br *BatchRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BatchResponse is a slice of auto-assigned sequence numbers from SamKv,
-// one per entry in the submitted batch, in order.
+// BatchResponse 是 SamKv 返回的自动分配序列号数组，每个元素对应提交批次中的一条 entry，按顺序排列。
 //
-// Example response body:
+// 响应体示例：
 //
 //	[1, 2, 3]
 //
-// This means the 3 submitted entries were assigned sequences 1, 2, and 3 respectively.
+// 表示提交的 3 条 entry 分别被分配了序列号 1、2、3。
 type BatchResponse []int64
