@@ -27,12 +27,12 @@ samtail 作为**纯客户端**运行，向 SamKv 的 `/logs/batch` 端点发送 
 
 ```
 samtail ──── POST /logs/batch ────→ SamKv
-        ←──── 201 {"sequence":N} ────
+        ←──── 201 [seq,seq,...] ────
 ```
 
 - 请求格式：`{"entries":[{"labels":{...},"message":"..."}, ...]}`
-- 成功响应：`201 Created`，body 为 `{"sequence":N}`，N 是 SamKv 自动分配的唯一序列号
-- 序列号由 samtail 记录到日志中，用于可观测性和调试
+- 成功响应：`201 Created`，body 为 `[seq1, seq2, ...]`，每个元素对应一条 entry 的序列号
+- 序列号由 SamKv 自动分配，按 entry 顺序排列，samtail 记录到日志中
 
 ---
 

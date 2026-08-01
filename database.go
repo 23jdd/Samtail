@@ -81,9 +81,11 @@ func (n *NoopWriter) Close() error {
 //	Content-Type: application/json
 //	{"entries":[{"labels":{...},"message":"..."},...]}
 //
-// SamKv responds with HTTP 201 Created and an auto-assigned sequence number:
+// SamKv responds with HTTP 201 Created and an auto-assigned sequence number array:
 //
-//	{"sequence": 42}
+//	[1, 2, 3]
+//
+// Each element is the sequence for the corresponding entry in the batch.
 //
 // Features:
 //   - Configurable timeout per request
@@ -96,7 +98,7 @@ func (n *NoopWriter) Close() error {
 //   - Non-201 response (4xx): returns error without retry (client error)
 //   - Non-201 response (5xx): retries up to maxRetries with exponential backoff
 //   - Response body >= 10KB: truncated in error messages to prevent log spam
-//   - Response body is not valid JSON: sequence is set to 0, no error
+//   - Response body is not valid JSON array: sequences are ignored, no error
 //
 // Example:
 //
@@ -176,12 +178,13 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusCreated {
-			var batchResp BatchResponse
-			if err := json.Unmarshal(respBody, &batchResp); err != nil {
-				log.Printf("[HTTPWriter] failed to decode sequence from response: %v (body: %s)", err, string(respBody))
-				// Still succeed; sequence tracking is best-effort
+			var seqs BatchResponse
+			if err := json.Unmarshal(respBody, &seqs); err != nil {
+				log.Printf("[HTTPWriter] failed to decode sequences from response: %v (body: %s)", err, string(respBody))
+			} else if len(seqs) > 0 {
+				log.Printf("[HTTPWriter] wrote %d entries to %s (201, seq=%d..%d)", len(entries), h.url, seqs[0], seqs[len(seqs)-1])
 			} else {
-				log.Printf("[HTTPWriter] wrote %d entries to %s (201, sequence=%d)", len(entries), h.url, batchResp.Sequence)
+				log.Printf("[HTTPWriter] wrote %d entries to %s (201)", len(entries), h.url)
 			}
 			return nil
 		}

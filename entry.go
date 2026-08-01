@@ -138,12 +138,12 @@ func (br *BatchRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BatchResponse is returned by the SamKv database after a successful batch write.
-// The sequence is an auto-assigned unique integer from SamKv.
+// BatchResponse is a slice of auto-assigned sequence numbers from SamKv,
+// one per entry in the submitted batch, in order.
 //
-// Example response:
+// Example response body:
 //
-//	{"sequence": 42}
-type BatchResponse struct {
-	Sequence int64 `json:"sequence"`
-}
+//	[1, 2, 3]
+//
+// This means the 3 submitted entries were assigned sequences 1, 2, and 3 respectively.
+type BatchResponse []int64
