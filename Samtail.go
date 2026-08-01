@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,11 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+)
+
+const (
+	MetaFile     = "meta.json"
+	TemplateFile = "meta_template_*.json"
 )
 
 // LogEvent 从 fsnotify 转化来的内部事件
@@ -127,11 +133,11 @@ func isLogFile(name string) bool {
 	return strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".txt")
 }
 
-// TailReader：文件读取 + Offset 跟踪 =
+// TailReader：文件读取 + Offset 跟踪
 type TailReader struct {
 	eventChan chan LogEvent
 	lineChan  chan LogLine
-	states    map[ID]*FileState // inode -> state
+	states    map[ID]*FileState // ID -> state
 	mu        sync.RWMutex
 }
 
@@ -249,6 +255,53 @@ func (t *TailReader) pollAllFiles() {
 
 func (t *TailReader) closeFile(path string) {
 	// 可选：清理已删除/重命名文件的 state（保守策略可保留，防止轮转时丢失）
+}
+func (t *TailReader) Checkpoit() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	for {
+		<-ticker.C
+		t.SafeWriteFile()
+	}
+}
+
+// SafeWriteFile 原子写入文件：要么写入完整新内容，要么保持旧内容不变
+func (t *TailReader) SafeWriteFile() error {
+	tmpFile, err := os.CreateTemp(".", TemplateFile)
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// 确保临时文件关闭和清理（失败时删除）
+	defer func() {
+		tmpFile.Close()
+		if err != nil {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	//写入数据
+	if err := json.NewEncoder(tmpFile).Encode(t.states); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+
+	// 强制刷盘
+	if err = tmpFile.Sync(); err != nil {
+		return fmt.Errorf("fsync temp: %w", err)
+	}
+
+	// 关闭文件描述符
+	if err = tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+
+	// 原子重命名：覆盖已存在的目标，或新建
+	// 这一步是原子的，外部只会看到"旧内容"或"完整新内容"
+	if err = os.Rename(tmpPath, MetaFile); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+
+	return nil
 }
 
 // BatchWriter：批量缓冲存储
