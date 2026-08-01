@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -297,6 +298,24 @@ func (t *TailReader) SafeWriteFile() error {
 //
 // 配置通过环境变量读取，支持本地备份和远程 SamKv 多后端同时写入。
 func main() {
+	// 命令行参数
+	configPath := flag.String("f", "", ".env 配置文件路径")
+	daemonFlag := flag.Bool("d", false, "后台守护进程模式")
+	flag.Parse()
+
+	// -f：加载配置文件（优先级低于已存在的环境变量）
+	if *configPath != "" {
+		if err := loadEnvFile(*configPath); err != nil {
+			log.Fatalf("加载配置文件失败: %v", err)
+		}
+		log.Printf("已加载配置文件: %s", *configPath)
+	}
+
+	// -d：转为守护进程
+	if *daemonFlag {
+		daemonize("samtail.pid")
+	}
+
 	targetDir := envOrDefault("SAMTAIL_DIR", DefaultDir)
 	outputDir := envOrDefault("SAMTAIL_OUTPUT", DefaultOutDir)
 	dbURL := envOrDefault("SAMTAIL_DB_URL", DefaultDBURL)
