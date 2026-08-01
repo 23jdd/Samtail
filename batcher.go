@@ -73,20 +73,15 @@ func NewEntryBatcher(db DatabaseWriter, batchSize int, flushInterval time.Durati
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		buffer:        make([]LogEntry, 0, batchSize),
+		running:       true,
 	}
 }
 
-// Run starts the batcher's main loop. It blocks until ctx is cancelled.
+// Run starts the batcher's time-based flush loop. It blocks until ctx is cancelled.
 // On exit, it performs a final flush of any remaining entries.
+// If the batcher is already running a ticker, this call is a no-op.
+// The batcher always accepts entries via Add/AddBatch regardless of whether Run is active.
 func (b *EntryBatcher) Run(ctx context.Context) {
-	b.mu.Lock()
-	if b.running {
-		b.mu.Unlock()
-		return
-	}
-	b.running = true
-	b.mu.Unlock()
-
 	ticker := time.NewTicker(b.flushInterval)
 	defer ticker.Stop()
 	defer b.flushAll() // final flush on exit
@@ -144,6 +139,7 @@ func (b *EntryBatcher) AddBatch(entries []LogEntry) {
 func (b *EntryBatcher) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.running = false
 	b.flushLocked()
 	if b.db != nil {
 		return b.db.Close()
