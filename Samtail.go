@@ -23,7 +23,7 @@ const (
 	TemplateFile  = "meta_template_*.json"
 	DefaultDir    = "logs"
 	DefaultOutDir = "./output"
-	DefaultDBURL  = "http://127.0.0.1:6379/logs/batch"
+	DefaultDBURL  = "http://127.0.0.1:9999/logs/batch"
 )
 
 // LogEvent fsnotify 转化来的内部事件
@@ -291,6 +291,11 @@ func (t *TailReader) SafeWriteFile() error {
 	return nil
 }
 
+// main 组装完整管道：
+//
+//	文件系统 → Watcher → [LogEvent] → TailReader → [LogLine] → Parser → [LogEntry] → EntryBatcher → DatabaseWriter → SamKv
+//
+// 配置通过环境变量读取，支持本地备份和远程 SamKv 多后端同时写入。
 func main() {
 	targetDir := envOrDefault("SAMTAIL_DIR", DefaultDir)
 	outputDir := envOrDefault("SAMTAIL_OUTPUT", DefaultOutDir)
@@ -301,12 +306,14 @@ func main() {
 	log.Printf("samtail starting: dir=%s output=%s db=%s batch=%d flush=%ds",
 		targetDir, outputDir, dbURL, batchSize, flushSecs)
 
+	// 根 context，收到 SIGINT/SIGTERM 时取消
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	eventChan := make(chan LogEvent, 256)
-	lineChan := make(chan LogLine, 5000)
-	entryChan := make(chan LogEntry, 5000)
+	// 管道 channel：带缓冲，解耦各阶段速率
+	eventChan := make(chan LogEvent, 256) // Watcher → TailReader
+	lineChan := make(chan LogLine, 5000)  // TailReader → Parser
+	entryChan := make(chan LogEntry, 5000) // Parser → EntryBatcher
 
 	dbWriter := buildDatabaseWriter(dbURL, outputDir)
 	defer dbWriter.Close()
@@ -325,6 +332,7 @@ func main() {
 
 	parser := NewParser(lineChan, entryChan)
 
+	// 信号处理：收到 SIGINT/SIGTERM 时取消 context，触发优雅关闭
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
@@ -333,12 +341,13 @@ func main() {
 		cancel()
 	}()
 
+	// 启动所有管道组件（使用 WaitGroup 确保全部退出后才清理）
 	var wg WaitGroup
-	wg.Go(func() { watcher.Run(ctx) })
-	wg.Go(func() { reader.Run(ctx) })
-	wg.Go(func() { reader.Checkpoit(ctx) })
-	wg.Go(func() { parser.Run(ctx) })
-	wg.Go(func() {
+	wg.Go(func() { watcher.Run(ctx) })       // 文件监控
+	wg.Go(func() { reader.Run(ctx) })        // 增量读取
+	wg.Go(func() { reader.Checkpoit(ctx) })  // 偏移量持久化
+	wg.Go(func() { parser.Run(ctx) })        // 格式解析
+	wg.Go(func() {                            // entry 中继：Parser → Batcher
 		for {
 			select {
 			case <-ctx.Done():
@@ -351,14 +360,20 @@ func main() {
 			}
 		}
 	})
-	wg.Go(func() { batcher.Run(ctx) })
-	wg.Wait()
+	wg.Go(func() { batcher.Run(ctx) })       // 定时刷新
+	wg.Wait() // 等待所有组件退出
 
 	log.Println("final flush...")
 	batcher.Close()
 	log.Println("samtail stopped")
 }
 
+// buildDatabaseWriter 根据配置构建 DatabaseWriter：
+//   - outputDir 非空 → 添加 FileWriter（本地 JSONL 备份）
+//   - dbURL 非空 → 添加 HTTPWriter（发送到 SamKv）
+//   - 都为空 → NoopWriter
+//   - 仅一个后端 → 直接返回该 writer
+//   - 多个后端 → MultiWriter 扇出
 func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	var writers []DatabaseWriter
 
@@ -391,7 +406,7 @@ func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	return NewMultiWriter(writers...)
 }
 
-// WaitGroup 是对 sync.WaitGroup 的包装，提供 .Go(func()) 语法糖。
+// WaitGroup 对 sync.WaitGroup 的包装，提供 .Go(func()) 语法糖。
 // Go 在 new goroutine 中启动 f，f 返回时自动 Done。f 不得 panic。
 type WaitGroup struct {
 	wg sync.WaitGroup
@@ -407,6 +422,7 @@ func (wg *WaitGroup) Go(f func()) {
 
 func (wg *WaitGroup) Wait() { wg.wg.Wait() }
 
+// envOrDefault 读取环境变量，不存在时返回默认值。
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -414,6 +430,7 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+// envIntOrDefault 读取整型环境变量，不存在或格式错误时返回默认值。
 func envIntOrDefault(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		var n int

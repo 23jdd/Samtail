@@ -7,13 +7,16 @@ import (
 )
 
 // LogEntry 一条解析后的日志条目，包含标签和消息。
+//
+// 示例：原始文本 "app=api\nstarted" 解析为 Labels{"app":"api"}, Message:"started"。
+// Labels 的 key/value 不可为空，Message 不可为空（校验规则见 Validate）。
 type LogEntry struct {
 	Labels    map[string]string `json:"labels"`
 	Message   string            `json:"message"`
 	Timestamp time.Time         `json:"timestamp,omitempty"`
 }
 
-// NewLogEntry 创建 LogEntry，labels 为 nil 时自动初始化为空 map。
+// NewLogEntry 创建 LogEntry。labels 为 nil 时自动初始化为空 map。
 func NewLogEntry(labels map[string]string, message string) LogEntry {
 	if labels == nil {
 		labels = make(map[string]string)
@@ -24,13 +27,13 @@ func NewLogEntry(labels map[string]string, message string) LogEntry {
 	}
 }
 
-// WithTimestamp 返回设置了指定时间戳的副本。
+// WithTimestamp 返回设置了指定时间戳的副本，原 entry 不变。
 func (e LogEntry) WithTimestamp(t time.Time) LogEntry {
 	e.Timestamp = t
 	return e
 }
 
-// GetLabel 根据 key 返回标签值，不存在时返回空字符串。
+// GetLabel 根据 key 返回标签值。不存在或 labels 为 nil 时返回空字符串。
 func (e LogEntry) GetLabel(key string) string {
 	if e.Labels == nil {
 		return ""
@@ -44,7 +47,7 @@ func (e LogEntry) HasLabel(key string) bool {
 	return ok
 }
 
-// LabelKeys 返回所有标签 key 的排序列表。
+// LabelKeys 返回所有标签 key 的排序列表，便于一致遍历。
 func (e LogEntry) LabelKeys() []string {
 	keys := make([]string, 0, len(e.Labels))
 	for k := range e.Labels {
@@ -54,7 +57,8 @@ func (e LogEntry) LabelKeys() []string {
 	return keys
 }
 
-// Validate 校验 entry：message 不可为空，label key/value 不可为空。
+// Validate 校验 entry 是否合法。
+// Message 为空或 label key/value 为空时返回 ValidationError。
 func (e LogEntry) Validate() error {
 	if len(e.Message) == 0 {
 		return &ValidationError{Field: "message", Reason: "message must not be empty"}
@@ -70,7 +74,7 @@ func (e LogEntry) Validate() error {
 	return nil
 }
 
-// ValidationError LogEntry 校验失败时返回。
+// ValidationError LogEntry 校验失败时返回，包含出错的字段和原因。
 type ValidationError struct {
 	Field  string
 	Reason string
@@ -80,7 +84,8 @@ func (ve *ValidationError) Error() string {
 	return "validation error: " + ve.Field + ": " + ve.Reason
 }
 
-// BatchRequest POST /logs/batch 的请求体结构。
+// BatchRequest 发送给 SamKv POST /logs/batch 的请求体。
+// JSON 格式：{"entries": [{"labels": {...}, "message": "..."}, ...]}
 type BatchRequest struct {
 	Entries []LogEntry `json:"entries"`
 }
@@ -95,5 +100,6 @@ func (br *BatchRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BatchResponse SamKv 返回的序列号数组，每元素对应一条 entry，按顺序排列。如 [1,2,3]。
+// BatchResponse SamKv 返回 201 时的响应体，为自动分配的序列号数组。
+// 每个元素对应提交批次中一条 entry，按顺序排列。如 [1, 2, 3]。
 type BatchResponse []int64

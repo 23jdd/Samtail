@@ -14,20 +14,33 @@ import (
 )
 
 // DatabaseWriter 批量写入日志条目的后端接口。
+// 实现：HTTPWriter（发送到 SamKv）、FileWriter（本地备份）、MultiWriter（多后端扇出）、NoopWriter（测试用）。
 type DatabaseWriter interface {
+	// WriteBatch 写入一批条目。ctx 控制超时和取消。空 entries 应为空操作。
 	WriteBatch(ctx context.Context, entries []LogEntry) error
+	// Close 释放资源。关闭后 WriteBatch 应返回错误。
 	Close() error
 }
 
-// NoopWriter 丢弃所有条目，用于测试。
+// --- NoopWriter --------------------------------------------------------------
+
+// NoopWriter 丢弃所有条目，用于测试和开发。并发安全，始终成功。
 type NoopWriter struct{}
 
 func (n *NoopWriter) WriteBatch(_ context.Context, _ []LogEntry) error { return nil }
 func (n *NoopWriter) Close() error                                     { return nil }
 
-// HTTPWriter 通过 POST /logs/batch 发送 JSON 到 SamKv。
-// SamKv 返回 201 Created 和序列号数组 [seq1, seq2, ...]。
-// 5xx/网络错误重试最多 3 次（指数退避），4xx 不重试。
+// --- HTTPWriter --------------------------------------------------------------
+
+// HTTPWriter 通过 POST /logs/batch 发送 JSON 批次到 SamKv。
+//
+// 请求格式：{"entries": [{"labels": {...}, "message": "..."}, ...]}
+// 成功响应：201 Created，body 为序列号数组 [seq1, seq2, ...]，每个对应一条 entry。
+//
+// 可靠性：
+//   - 5xx / 网络错误：指数退避重试（100ms→200ms→400ms），最多 3 次
+//   - 4xx 客户端错误：不重试，直接返回错误
+//   - 空批次：跳过 HTTP 请求
 type HTTPWriter struct {
 	url        string
 	client     *http.Client
@@ -37,6 +50,7 @@ type HTTPWriter struct {
 	closed     bool
 }
 
+// NewHTTPWriter 创建 HTTPWriter。timeout <= 0 时默认 10s，maxRetries 默认 3。
 func NewHTTPWriter(url string, timeout time.Duration) *HTTPWriter {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
@@ -72,7 +86,7 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 			log.Printf("[HTTPWriter] 重试 %d/%d，等待 %v", attempt, h.maxRetries, backoff)
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return ctx.Err() // 上下文取消时立即退出
 			case <-time.After(backoff):
 			}
 		}
@@ -86,9 +100,10 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 		resp, err := h.client.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("HTTPWriter: post request: %w", err)
-			continue
+			continue // 网络错误，重试
 		}
 
+		// 读取响应体，限制 10KB 防日志刷屏
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024))
 		resp.Body.Close()
 
@@ -104,15 +119,18 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 			return nil
 		}
 
+		// 4xx：客户端错误，不重试
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return fmt.Errorf("HTTPWriter: server rejected batch (status %d): %s", resp.StatusCode, string(respBody))
 		}
+		// 5xx：服务端错误，重试
 		lastErr = fmt.Errorf("HTTPWriter: server error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	return fmt.Errorf("HTTPWriter: failed after %d retries: %w", h.maxRetries+1, lastErr)
 }
 
+// Close 关闭 HTTPWriter，释放空闲连接。关闭后 WriteBatch 返回错误。
 func (h *HTTPWriter) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -123,7 +141,16 @@ func (h *HTTPWriter) Close() error {
 	return nil
 }
 
-// FileWriter 将 JSON 编码的条目每行一条追加写入本地文件，用于备份。
+// --- FileWriter --------------------------------------------------------------
+
+// FileWriter 将 LogEntry 以 JSONL 格式（每行一条 JSON）追加写入本地文件。
+// 每次写入后 fsync 保证持久化，用于备份和审计。
+//
+// 边界条件：
+//   - 文件不存在：自动创建（O_CREATE），权限 0644
+//   - 目录不存在：返回错误
+//   - 空批次：不写入，不做 fsync
+//   - 并发写入：互斥锁保护
 type FileWriter struct {
 	path   string
 	file   *os.File
@@ -131,6 +158,7 @@ type FileWriter struct {
 	closed bool
 }
 
+// NewFileWriter 打开或创建指定路径的 JSONL 文件。
 func NewFileWriter(path string) (*FileWriter, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -150,6 +178,7 @@ func (f *FileWriter) WriteBatch(_ context.Context, entries []LogEntry) error {
 		return nil
 	}
 
+	// 逐条序列化并写入
 	for _, entry := range entries {
 		data, err := json.Marshal(entry)
 		if err != nil {
@@ -160,6 +189,7 @@ func (f *FileWriter) WriteBatch(_ context.Context, entries []LogEntry) error {
 		}
 	}
 
+	// 强制刷盘，保证断电不丢
 	if err := f.file.Sync(); err != nil {
 		return fmt.Errorf("FileWriter: fsync: %w", err)
 	}
@@ -177,7 +207,11 @@ func (f *FileWriter) Close() error {
 	return nil
 }
 
-// MultiWriter 将写入扇出到多个后端，任一失败不影响其余，返回第一个错误。
+// --- MultiWriter -------------------------------------------------------------
+
+// MultiWriter 将写入扇出到多个 DatabaseWriter 后端。
+// 任一后端失败会记录日志，但不影响其余后端继续写入。
+// 返回遇到的第一个错误（如果有）。
 type MultiWriter struct {
 	writers []DatabaseWriter
 }
