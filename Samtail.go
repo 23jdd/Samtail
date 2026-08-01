@@ -21,11 +21,10 @@ import (
 )
 
 const (
-	MetaFile      = "meta.json"
-	TemplateFile  = "meta_template_*.json"
-	DefaultDir    = "logs"
-	DefaultOutDir = "./output"
-	DefaultDBURL  = "http://127.0.0.1:9999/logs/batch"
+	MetaFile     = "meta.json"
+	TemplateFile = "meta_template_*.json"
+	DefaultDir   = "logs"
+	DefaultDBURL = "http://127.0.0.1:6379/logs/batch"
 )
 
 // LogEvent fsnotify 转化来的内部事件
@@ -371,27 +370,24 @@ func main() {
 	}
 
 	targetDir := envOrDefault("SAMTAIL_DIR", DefaultDir)
-	outputDir := envOrDefault("SAMTAIL_OUTPUT", DefaultOutDir)
 	dbURL := envOrDefault("SAMTAIL_DB_URL", DefaultDBURL)
 	batchSize := envIntOrDefault("SAMTAIL_BATCH_SIZE", 1000)
 	flushSecs := envIntOrDefault("SAMTAIL_FLUSH_SECS", 2)
 
-	log.Printf("samtail starting: dir=%s output=%s db=%s batch=%d flush=%ds",
-		targetDir, outputDir, dbURL, batchSize, flushSecs)
+	log.Printf("samtail starting: dir=%s db=%s batch=%d flush=%ds",
+		targetDir, dbURL, batchSize, flushSecs)
 
-	// 根 context，收到 SIGINT/SIGTERM 时取消
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 管道 channel：带缓冲，解耦各阶段速率
-	eventChan := make(chan LogEvent, 256)  // Watcher → TailReader
-	lineChan := make(chan LogLine, 5000)   // TailReader → Parser
-	entryChan := make(chan LogEntry, 5000) // Parser → EntryBatcher
+	eventChan := make(chan LogEvent, 256)
+	lineChan := make(chan LogLine, 5000)
+	entryChan := make(chan LogEntry, 5000)
 
-	dbWriter := buildDatabaseWriter(dbURL, outputDir)
-	defer dbWriter.Close()
+	httpWriter := NewHTTPWriter(dbURL, 10*time.Second)
+	defer httpWriter.Close()
 
-	batcher := NewEntryBatcher(dbWriter, batchSize, time.Duration(flushSecs)*time.Second)
+	batcher := NewEntryBatcher(httpWriter, batchSize, time.Duration(flushSecs)*time.Second)
 
 	watcher, err := NewWatcher(targetDir, eventChan)
 	if err != nil {
@@ -444,43 +440,20 @@ func main() {
 	log.Println("samtail stopped")
 }
 
-// buildDatabaseWriter 根据配置构建 DatabaseWriter：
-//   - outputDir 非空 → 添加 FileWriter（本地 JSONL 备份）
-//   - dbURL 非空 → 添加 HTTPWriter（发送到 SamKv）
-//   - 都为空 → NoopWriter
-//   - 仅一个后端 → 直接返回该 writer
-//   - 多个后端 → MultiWriter 扇出
-func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
-	var writers []DatabaseWriter
-
-	if outputDir != "" {
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
-			log.Printf("create output dir: %v", err)
-		} else {
-			backupPath := filepath.Join(outputDir, fmt.Sprintf("backup_%s.jsonl", time.Now().Format("20060102_150405")))
-			if fw, err := NewFileWriter(backupPath); err != nil {
-				log.Printf("create file writer: %v", err)
-			} else {
-				writers = append(writers, fw)
-				log.Printf("local backup: %s", backupPath)
-			}
-		}
-	}
-
-	if dbURL != "" {
-		writers = append(writers, NewHTTPWriter(dbURL, 10*time.Second))
-		log.Printf("remote database: %s", dbURL)
-	}
-
-	if len(writers) == 0 {
-		log.Println("no database configured, using noop writer")
-		return &NoopWriter{}
-	}
-	if len(writers) == 1 {
-		return writers[0]
-	}
-	return NewMultiWriter(writers...)
+// WaitGroup 对 sync.WaitGroup 的包装，提供 .Go(func()) 语法糖。
+type WaitGroup struct {
+	wg sync.WaitGroup
 }
+
+func (wg *WaitGroup) Go(f func()) {
+	wg.wg.Add(1)
+	go func() {
+		defer wg.wg.Done()
+		f()
+	}()
+}
+
+func (wg *WaitGroup) Wait() { wg.wg.Wait() }
 
 // envOrDefault 读取环境变量，不存在时返回默认值。
 func envOrDefault(key, def string) string {

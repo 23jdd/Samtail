@@ -32,7 +32,6 @@ go build -o samtail .
 |------|--------|------|
 | `SAMTAIL_DIR` | `logs` | 监控目录 |
 | `SAMTAIL_DB_URL` | `http://127.0.0.1:6379/logs/batch` | SamKv 端点 |
-| `SAMTAIL_OUTPUT` | `./output` | 本地备份目录 |
 | `SAMTAIL_BATCH_SIZE` | `1000` | 批次大小 |
 | `SAMTAIL_FLUSH_SECS` | `2` | 刷新间隔（秒） |
 
@@ -56,7 +55,6 @@ label3=value3
 ```
 
 SamKv 返回 `201 Created`，body 为 `{"sequences":[1,2,...]}`。
-
 
 ## 项目结构
 
