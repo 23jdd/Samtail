@@ -299,17 +299,18 @@ func (t *TailReader) SafeWriteFile() error {
 // 配置通过环境变量读取，支持本地备份和远程 SamKv 多后端同时写入。
 func main() {
 	configPath := flag.String("f", "", ".env 配置文件路径")
-	daemonFlag := flag.Bool("d", false, "后台守护进程模式")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `samtail - 日志收集器，监控本地日志并发送到 SamKv
 
 用法:
   samtail [选项]
+  samtail start  [-f <.env>]   启动守护进程
+  samtail stop                 停止守护进程
+  samtail status               查看守护进程状态
 
 选项:
   -f <path>  加载 .env 格式配置文件
-  -d         后台守护进程模式（PID 写入 samtail.pid）
   -h         显示此帮助信息
 
 环境变量:
@@ -320,26 +321,52 @@ func main() {
   SAMTAIL_FLUSH_SECS    刷新间隔秒数（默认: 2）
 
 示例:
-  samtail                           # 默认配置运行
+  samtail                           # 前台运行
   samtail -f .env                   # 加载配置文件
-  samtail -d                        # 后台守护进程
-  samtail -d -f .env                # 守护进程 + 配置文件
+  samtail start                     # 后台守护进程
+  samtail start -f .env             # 守护进程 + 配置文件
+  samtail stop                      # 停止守护进程
+  samtail status                    # 查看状态
 `)
 	}
 
 	flag.Parse()
 
-	// -f：加载配置文件（优先级低于已存在的环境变量）
+	// 处理 start/stop/status 子命令
+	args := flag.Args()
+	if len(args) > 0 {
+		switch args[0] {
+		case "start":
+			// 收集传递给子进程的参数（去掉 "start" 本身）
+			childArgs := []string{}
+			for _, a := range os.Args[1:] {
+				if a != "start" {
+					childArgs = append(childArgs, a)
+				}
+			}
+			if err := startDaemon(childArgs...); err != nil {
+				log.Fatalf("start: %v", err)
+			}
+			return
+		case "stop":
+			if err := stopDaemon(); err != nil {
+				log.Fatalf("stop: %v", err)
+			}
+			return
+		case "status":
+			statusDaemon()
+			return
+		default:
+			log.Fatalf("未知命令: %s，使用 -h 查看帮助", args[0])
+		}
+	}
+
+	// -f：加载配置文件
 	if *configPath != "" {
 		if err := loadEnvFile(*configPath); err != nil {
 			log.Fatalf("加载配置文件失败: %v", err)
 		}
 		log.Printf("已加载配置文件: %s", *configPath)
-	}
-
-	// -d：转为守护进程
-	if *daemonFlag {
-		daemonize("samtail.pid")
 	}
 
 	targetDir := envOrDefault("SAMTAIL_DIR", DefaultDir)

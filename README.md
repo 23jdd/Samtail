@@ -6,10 +6,12 @@
 
 ```bash
 go build -o samtail .
-./samtail                          # 默认配置
+./samtail                          # 前台运行
 ./samtail -f .env                  # 使用配置文件
-./samtail -d                       # 后台守护进程
-./samtail -d -f .env               # 守护进程 + 配置文件
+./samtail start                    # 后台守护进程
+./samtail start -f .env            # 守护进程 + 配置文件
+./samtail stop                     # 停止守护进程
+./samtail status                   # 查看状态
 ```
 
 配置文件示例见 [.env.example](.env.example)。
@@ -19,7 +21,10 @@ go build -o samtail .
 | 参数 | 说明 |
 |------|------|
 | `-f <path>` | 加载 .env 格式配置文件 |
-| `-d` | 后台守护进程模式，PID 写入 `samtail.pid` |
+| `start` | 启动后台守护进程 |
+| `stop` | 停止守护进程 |
+| `status` | 查看守护进程状态 |
+| `-h` | 显示帮助 |
 
 ## 配置
 
