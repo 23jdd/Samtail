@@ -73,13 +73,17 @@ func (n *NoopWriter) Close() error {
 // ============================================================================
 
 // HTTPWriter implements DatabaseWriter by sending batches as JSON
-// to a remote HTTP endpoint.
+// to a remote SamKv database endpoint.
 //
-// It uses the same JSON format as the server endpoint:
+// It uses the POST /logs/batch format:
 //
 //	POST /logs/batch
 //	Content-Type: application/json
 //	{"entries":[{"labels":{...},"message":"..."},...]}
+//
+// SamKv responds with HTTP 201 Created and an auto-assigned sequence number:
+//
+//	{"sequence": 42}
 //
 // Features:
 //   - Configurable timeout per request
@@ -89,13 +93,14 @@ func (n *NoopWriter) Close() error {
 // Boundary conditions:
 //   - Empty entries slice: skips the HTTP request (no-op)
 //   - Network timeout: returns error after retries exhausted
-//   - Non-2xx response (4xx): returns error without retry (client error)
-//   - Non-2xx response (5xx): retries up to maxRetries with exponential backoff
+//   - Non-201 response (4xx): returns error without retry (client error)
+//   - Non-201 response (5xx): retries up to maxRetries with exponential backoff
 //   - Response body >= 10KB: truncated in error messages to prevent log spam
+//   - Response body is not valid JSON: sequence is set to 0, no error
 //
 // Example:
 //
-//	writer := NewHTTPWriter("http://127.0.0.1:9999/logs/batch", 5*time.Second)
+//	writer := NewHTTPWriter("http://127.0.0.1:6379/logs/batch", 5*time.Second)
 //	defer writer.Close()
 //	err := writer.WriteBatch(ctx, entries)
 type HTTPWriter struct {
@@ -166,12 +171,18 @@ func (h *HTTPWriter) WriteBatch(ctx context.Context, entries []LogEntry) error {
 			continue
 		}
 
-		// Read and discard body to allow connection reuse
+		// Read body for sequence number or error info
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024))
 		resp.Body.Close()
 
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			log.Printf("[HTTPWriter] wrote %d entries to %s (status %d)", len(entries), h.url, resp.StatusCode)
+		if resp.StatusCode == http.StatusCreated {
+			var batchResp BatchResponse
+			if err := json.Unmarshal(respBody, &batchResp); err != nil {
+				log.Printf("[HTTPWriter] failed to decode sequence from response: %v (body: %s)", err, string(respBody))
+				// Still succeed; sequence tracking is best-effort
+			} else {
+				log.Printf("[HTTPWriter] wrote %d entries to %s (201, sequence=%d)", len(entries), h.url, batchResp.Sequence)
+			}
 			return nil
 		}
 
