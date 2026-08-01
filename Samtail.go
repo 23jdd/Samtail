@@ -335,21 +335,11 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() { defer wg.Done(); watcher.Run(ctx) }()
-
-	wg.Add(1)
-	go func() { defer wg.Done(); reader.Run(ctx) }()
-
-	wg.Add(1)
-	go func() { defer wg.Done(); reader.Checkpoit(ctx) }()
-
-	wg.Add(1)
-	go func() { defer wg.Done(); parser.Run(ctx) }()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wgDo(&wg, func() { watcher.Run(ctx) })
+	wgDo(&wg, func() { reader.Run(ctx) })
+	wgDo(&wg, func() { reader.Checkpoit(ctx) })
+	wgDo(&wg, func() { parser.Run(ctx) })
+	wgDo(&wg, func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -361,10 +351,8 @@ func main() {
 				batcher.Add(entry)
 			}
 		}
-	}()
-
-	wg.Add(1)
-	go func() { defer wg.Done(); batcher.Run(ctx) }()
+	})
+	wgDo(&wg, func() { batcher.Run(ctx) })
 
 	wg.Wait()
 
@@ -404,6 +392,8 @@ func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	}
 	return NewMultiWriter(writers...)
 }
+
+func wgDo(wg *sync.WaitGroup, fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
 
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
