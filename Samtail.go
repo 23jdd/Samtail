@@ -199,7 +199,7 @@ func (t *TailReader) readFile(path string) {
 	t.mu.Lock()
 	state, exists := t.states[id]
 	if !exists {
-		// 新文件：从开头或末尾读取？生产环境通常从新文件开头读
+		// 新文件：从开头或末尾读取 生产环境通常从新文件开头读
 		state = &FileState{Offset: 0, Path: path}
 		t.states[id] = state
 	} else if state.Path != path {
@@ -407,7 +407,7 @@ func (b *BatchWriter) flush() {
 func main() {
 	targetDir := "logs"     // 监控目录
 	outputDir := "./output" // 存储目录
-
+     
 	// 创建带取消的上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -440,21 +440,30 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		watcher.Run(ctx)
-	})
+	}()
 
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		reader.Run(ctx)
-	})
-	wg.Go(func() {
-		reader.Checkpoit(ctx)
-	})
+	}()
 
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reader.Checkpoit(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		writer.Run(ctx)
-	})
-	// 等待所有组件退出
+	}()
+
 	wg.Wait()
 	log.Println("监控程序已退出")
 }
