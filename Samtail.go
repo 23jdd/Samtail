@@ -10,13 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
-
-
 
 // LogEvent 从 fsnotify 转化来的内部事件
 type LogEvent struct {
@@ -33,7 +30,6 @@ type LogLine struct {
 
 // FileState 跟踪每个文件的读取状态（持久化可防重启丢失）
 type FileState struct {
-	Inode  uint64 // 通过 inode 识别文件，不受重命名影响
 	Offset int64  // 当前读取偏移量
 	Path   string // 当前路径（可能因轮转改变）
 }
@@ -108,6 +104,7 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
+// scanExistingFiles 扫描目标目录所有日志文件
 func (w *Watcher) scanExistingFiles() {
 	entries, err := os.ReadDir(w.targetDir)
 	if err != nil {
@@ -130,7 +127,7 @@ func isLogFile(name string) bool {
 type TailReader struct {
 	eventChan chan LogEvent
 	lineChan  chan LogLine
-	states    map[uint64]*FileState // inode -> state
+	states    map[ID]*FileState // inode -> state
 	mu        sync.RWMutex
 }
 
@@ -138,7 +135,7 @@ func NewTailReader(eventChan chan LogEvent, lineChan chan LogLine) *TailReader {
 	return &TailReader{
 		eventChan: eventChan,
 		lineChan:  lineChan,
-		states:    make(map[uint64]*FileState),
+		states:    make(map[ID]*FileState),
 	}
 }
 
@@ -180,22 +177,16 @@ func (t *TailReader) readFile(path string) {
 	defer file.Close()
 
 	// 获取文件 inode
-	info, err := file.Stat()
+	id, err := GetLstat(path)
 	if err != nil {
 		return
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return // 非 Unix 系统需适配
-	}
-	inode := stat.Ino
-
 	t.mu.Lock()
-	state, exists := t.states[inode]
+	state, exists := t.states[id]
 	if !exists {
 		// 新文件：从开头或末尾读取？生产环境通常从新文件开头读
-		state = &FileState{Inode: inode, Offset: 0, Path: path}
-		t.states[inode] = state
+		state = &FileState{Offset: 0, Path: path}
+		t.states[id] = state
 	} else if state.Path != path {
 		// 同一个 inode 但路径变了？说明被重命名了，更新路径
 		state.Path = path
@@ -237,7 +228,7 @@ func (t *TailReader) readFile(path string) {
 
 	// 写回 offset
 	t.mu.Lock()
-	if s, ok := t.states[inode]; ok {
+	if s, ok := t.states[id]; ok {
 		s.Offset = offset
 	}
 	t.mu.Unlock()
@@ -359,16 +350,16 @@ func (b *BatchWriter) flush() {
 // ==================== 4. 主程序：组装流水线 ====================
 
 func main() {
-	targetDir := "./logs"    // 监控目录
-	outputDir := "./output"  // 存储目录
+	targetDir := "./logs"   // 监控目录
+	outputDir := "./output" // 存储目录
 
 	// 创建带取消的上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// 创建 Channel（带缓冲，解耦生产消费速率）
-	eventChan := make(chan LogEvent, 256)  // Watcher -> TailReader
-	lineChan := make(chan LogLine, 5000)   // TailReader -> BatchWriter
+	eventChan := make(chan LogEvent, 256) // Watcher -> TailReader
+	lineChan := make(chan LogLine, 5000)  // TailReader -> BatchWriter
 
 	// 初始化组件
 	watcher, err := NewWatcher(targetDir)
