@@ -103,6 +103,7 @@ func (p *Parser) processLine(line LogLine) {
 //
 // 解析规则：
 //   - 第一个 '=' 为 key/value 分隔符（value 中可以包含 '='）
+//   - key 中不得含空格（避免将 "m=+0.001" 这类时间戳误判为标签）
 //   - 空 key（=val 或 ,=val）的键值对被跳过
 //   - 重复 key 取最后一次出现的值
 //   - 不含 '=' 的行返回 nil
@@ -127,6 +128,9 @@ func parseLabelLine(line string) map[string]string {
 		key := strings.TrimSpace(pair[:idx])
 		if len(key) == 0 {
 			continue // 空 key，跳过
+		}
+		if strings.Contains(key, " ") {
+			return nil // key 含空格说明不是标签行
 		}
 		labels[key] = strings.TrimSpace(pair[idx+1:])
 	}

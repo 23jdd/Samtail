@@ -103,6 +103,16 @@ func TestParseLabelLine(t *testing.T) {
 			input: "app=api,,level=INFO,=bad,env=prod",
 			want:  map[string]string{"app": "api", "level": "INFO", "env": "prod"},
 		},
+		{
+			name:  "key with space is rejected (avoid timestamp m=+0.001 misparse)",
+			input: "2026-08-02 00:17:11 +0800 CST m=+0.001615501",
+			want:  nil,
+		},
+		{
+			name:  "space in key among valid pairs returns nil",
+			input: "app=api,bad key=val",
+			want:  nil,
+		},
 	}
 
 	for _, tt := range tests {
