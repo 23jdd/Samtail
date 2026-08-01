@@ -6,15 +6,27 @@
 
 ```bash
 go build -o samtail .
-./samtail
+./samtail                          # 默认配置
+./samtail -f .env                  # 使用配置文件
+./samtail -d                       # 后台守护进程
+./samtail -d -f .env               # 守护进程 + 配置文件
 ```
+
+配置文件示例见 [.env.example](.env.example)。
+
+## 命令行参数
+
+| 参数 | 说明 |
+|------|------|
+| `-f <path>` | 加载 .env 格式配置文件 |
+| `-d` | 后台守护进程模式，PID 写入 `samtail.pid` |
 
 ## 配置
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `SAMTAIL_DIR` | `logs` | 监控目录 |
-| `SAMTAIL_DB_URL` | `http://127.0.0.1:9999/logs/batch` | SamKv 端点 |
+| `SAMTAIL_DB_URL` | `http://127.0.0.1:6379/logs/batch` | SamKv 端点 |
 | `SAMTAIL_OUTPUT` | `./output` | 本地备份目录 |
 | `SAMTAIL_BATCH_SIZE` | `1000` | 批次大小 |
 | `SAMTAIL_FLUSH_SECS` | `2` | 刷新间隔（秒） |
@@ -38,6 +50,7 @@ label3=value3
 ]}
 ```
 
+SamKv 返回 `201 Created`，body 为序列号数组 `[1, 2, ...]`。
 
 ## 项目结构
 
