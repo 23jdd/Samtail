@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/mbndr/figlet4go"
 )
 
 const (
@@ -383,8 +384,8 @@ func main() {
 	defer cancel()
 
 	// 管道 channel：带缓冲，解耦各阶段速率
-	eventChan := make(chan LogEvent, 256) // Watcher → TailReader
-	lineChan := make(chan LogLine, 5000)  // TailReader → Parser
+	eventChan := make(chan LogEvent, 256)  // Watcher → TailReader
+	lineChan := make(chan LogLine, 5000)   // TailReader → Parser
 	entryChan := make(chan LogEntry, 5000) // Parser → EntryBatcher
 
 	dbWriter := buildDatabaseWriter(dbURL, outputDir)
@@ -415,11 +416,11 @@ func main() {
 
 	// 启动所有管道组件（使用 WaitGroup 确保全部退出后才清理）
 	var wg sync.WaitGroup
-	wg.Go(func() { watcher.Run(ctx) })       // 文件监控
-	wg.Go(func() { reader.Run(ctx) })        // 增量读取
-	wg.Go(func() { reader.Checkpoit(ctx) })  // 偏移量持久化
-	wg.Go(func() { parser.Run(ctx) })        // 格式解析
-	wg.Go(func() {                            // entry 中继：Parser → Batcher
+	wg.Go(func() { watcher.Run(ctx) })      // 文件监控
+	wg.Go(func() { reader.Run(ctx) })       // 增量读取
+	wg.Go(func() { reader.Checkpoit(ctx) }) // 偏移量持久化
+	wg.Go(func() { parser.Run(ctx) })       // 格式解析
+	wg.Go(func() {                          // entry 中继：Parser → Batcher
 		for {
 			select {
 			case <-ctx.Done():
@@ -432,7 +433,10 @@ func main() {
 			}
 		}
 	})
-	wg.Go(func() { batcher.Run(ctx) })       // 定时刷新
+	wg.Go(func() { batcher.Run(ctx) }) // 定时刷新
+	ascii := figlet4go.NewAsciiRender()
+	renderStr, _ := ascii.Render("Samtail")
+	fmt.Println(renderStr)
 	wg.Wait() // 等待所有组件退出
 
 	log.Println("final flush...")
@@ -477,8 +481,6 @@ func buildDatabaseWriter(dbURL, outputDir string) DatabaseWriter {
 	}
 	return NewMultiWriter(writers...)
 }
-
-
 
 // envOrDefault 读取环境变量，不存在时返回默认值。
 func envOrDefault(key, def string) string {
