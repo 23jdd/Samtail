@@ -177,7 +177,7 @@ func (t *TailReader) handleEvent(evt LogEvent) {
 	switch evt.Op {
 	case "create", "write":
 		t.readFile(evt.FilePath)
-	case "rename", "remove":
+	case "remove":
 		t.closeFile(evt.FilePath)
 	}
 }
@@ -242,7 +242,13 @@ func (t *TailReader) readFile(path string) {
 }
 
 func (t *TailReader) closeFile(path string) {
-	// 保守策略：保留 state，防止轮转时丢失
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, err := GetLstat(path)
+	if err != nil {
+		return
+	}
+	delete(t.states, id)
 }
 
 // Checkpoit 每 500ms 将读取状态原子写入 meta.json
@@ -439,21 +445,6 @@ func main() {
 	batcher.Close()
 	log.Println("samtail stopped")
 }
-
-// WaitGroup 对 sync.WaitGroup 的包装，提供 .Go(func()) 语法糖。
-type WaitGroup struct {
-	wg sync.WaitGroup
-}
-
-func (wg *WaitGroup) Go(f func()) {
-	wg.wg.Add(1)
-	go func() {
-		defer wg.wg.Done()
-		f()
-	}()
-}
-
-func (wg *WaitGroup) Wait() { wg.wg.Wait() }
 
 // envOrDefault 读取环境变量，不存在时返回默认值。
 func envOrDefault(key, def string) string {
