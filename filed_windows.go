@@ -38,23 +38,10 @@ func Get(path string) (string, error) {
 	vol := uint64(info.VolumeSerialNumber)
 	idx := uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow)
 
-	return ID{A: vol, B: idx}.String(), nil
+	return ID{Volume: vol, FileIndex: idx,Path: path}.String(), nil
 }
 
 // GetLstat 在 Windows 上等同于 Get（符号链接本身没有独立的 FileIndex）
 func GetLstat(path string) (string, error) {
 	return Get(path)
-}
-
-// Same 判断两个路径是否指向同一文件
-func Same(a, b string) (bool, error) {
-	ida, err := Get(a)
-	if err != nil {
-		return false, err
-	}
-	idb, err := Get(b)
-	if err != nil {
-		return false, err
-	}
-	return ida == idb, nil
 }

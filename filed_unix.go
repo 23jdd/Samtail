@@ -14,7 +14,7 @@ func Get(path string) (string, error) {
 	if err := unix.Stat(path, &stat); err != nil {
 		return "", fmt.Errorf("stat %s: %w", path, err)
 	}
-	return ID{A: uint64(stat.Dev), B: stat.Ino}.String(), nil
+	return ID{Volume: uint64(stat.Dev), FileIndex: stat.Ino,Path: path}.String(), nil
 }
 
 // GetLstat 返回 path 本身的唯一标识（不跟随符号链接）
@@ -23,18 +23,6 @@ func GetLstat(path string) (string, error) {
 	if err := unix.Lstat(path, &stat); err != nil {
 		return "", fmt.Errorf("lstat %s: %w", path, err)
 	}
-	return ID{A: uint64(stat.Dev), B: stat.Ino}.String(), nil
+	return ID{Volume: uint64(stat.Dev), FileIndex: stat.Ino,Path: path}.String(), nil
 }
 
-// Same 判断两个路径是否指向同一文件
-func Same(a, b string) (bool, error) {
-	ida, err := Get(a)
-	if err != nil {
-		return false, err
-	}
-	idb, err := Get(b)
-	if err != nil {
-		return false, err
-	}
-	return ida == idb, nil
-}
