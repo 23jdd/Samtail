@@ -24,7 +24,7 @@ const (
 	MetaFile     = "meta.json"
 	TemplateFile = "meta_template_*.json"
 	DefaultDir   = "logs"
-	DefaultDBURL = "http://127.0.0.1:6379/logs/batch"
+	DefaultDBURL = "http://127.0.0.1:9999/logs/batch"
 )
 
 // LogEvent fsnotify 转化来的内部事件
