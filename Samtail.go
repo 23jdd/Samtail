@@ -242,13 +242,15 @@ func (t *TailReader) readFile(path string) {
 }
 
 func (t *TailReader) closeFile(path string) {
+	log.Println("delete ", path)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	id, err := GetLstat(path)
-	if err != nil {
-		return
+	for k, v := range t.states {
+		if v.Path == path {
+			delete(t.states, k)
+			return
+		}
 	}
-	delete(t.states, id)
 }
 
 // Checkpoit 每 500ms 将读取状态原子写入 meta.json
